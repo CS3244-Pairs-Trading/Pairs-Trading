@@ -1,0 +1,14 @@
+# Python Virtual Environment
+venv/
+__pycache__/
+
+# Raw and Processed Datasets
+Stocks/
+Top1000_Stocks/
+*.zip
+cleaned_stocks.csv
+data/interim/
+data/processed/
+
+# Mac System Files
+.DS_Storecleaned_stocks.csv
