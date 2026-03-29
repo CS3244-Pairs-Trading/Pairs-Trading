@@ -9,6 +9,8 @@ Top1000_Stocks/
 cleaned_stocks.csv
 data/interim/
 data/processed/
+data/raw/
+src/pairs_discovery/__cache__/
 
 # Mac System Files
 .DS_Storecleaned_stocks.csv
