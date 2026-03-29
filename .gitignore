@@ -10,6 +10,7 @@ cleaned_stocks.csv
 data/interim/
 data/processed/
 data/raw/
+data/clustering/
 src/pairs_discovery/__cache__/
 
 # Mac System Files
