@@ -28,43 +28,13 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from src.config import DEFAULT_CONFIG, all_training_windows
 
-<<<<<<< Updated upstream
-from src.config import DEFAULT_CONFIG, all_training_windows
-=======
 VARIANCE_THRESHOLD = 0.80
->>>>>>> Stashed changes
 
 # HELPER FUNCTIONS
 
-<<<<<<< Updated upstream
-'''# training windows: (start_date, end_date, folder_name)
-TRAINING_WINDOWS = [
-    ("2010-01-01", "2012-12-31", "2010_2012"),
-    ("2010-01-01", "2013-12-31", "2010_2013"),
-    ("2010-01-01", "2014-12-31", "2010_2014"),
-    ("2010-01-01", "2015-12-31", "2010_2015"),
-    ("2010-01-01", "2016-12-31", "2010_2016"),
-]'''
-
-####################
-# helper functions #
-####################
-
-def load_return_matrix(
-    df: pd.DataFrame,
-    start_date: str,
-    end_date: str,
-    coverage: float = 0.8,
-) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Filter the long-format dataframe to a date window and pivot into a wide return matrix shaped (n_dates, n_tickers).
-    Tickers missing more than (1 - coverage) of dates in the window are dropped.
-    """
-=======
 # set up the return matrix
 def load_return_matrix(df, start_date, end_date, coverage = 0.8):
     # filter the dataframe into a date window
->>>>>>> Stashed changes
     window = df[(df["Date"] >= pd.Timestamp(start_date)) & (df["Date"] <= pd.Timestamp(end_date))]
 
     # pivot the long dataframe into a wide return matrix (n_dates, n_tickers)
@@ -144,69 +114,7 @@ def run_pca_for_window(df, start_date, end_date, window_label, output_dir):
     pca_df.to_csv(out_csv)
     print(f"PCA saved: {out_csv}")
 
-<<<<<<< Updated upstream
-    return pca_df
-
-def run_all_windows(
-    input_file: Path,
-    output_dir: Path,
-    variance_threshold: float = 0.80,
-) -> None:
-    # load once, filter per window
-    print(f"Loading features from: {input_file}")
-    df = pd.read_csv(input_file, parse_dates = ["Date"])
-    df = df.dropna(subset = ["SimpleReturn"])
-    print(f"Total rows loaded: {len(df)}\n")
-
-    '''for start_date, end_date, window_label in DEFAULT_CONFIG.windows:
-        print(f"Window {window_label.replace('_', '–')}")
-        run_pca_for_window(
-            df, start_date, end_date, window_label,
-            output_dir, variance_threshold,
-        )
-        print()'''
-    
-    for start_date, end_date, window_label in all_training_windows(DEFAULT_CONFIG):
-        print(f"Window {window_label.replace('_', '–')}")
-        run_pca_for_window(
-            df, start_date, end_date, window_label,
-            output_dir, variance_threshold,
-        )
-        print()
-
-########
-# main #
-########
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description = "Run PCA on SimpleReturn for each training window."
-    )
-    parser.add_argument(
-        "--input_file",
-        type = Path,
-        default = DEFAULT_CONFIG.engineered_features_path,
-        help = "Path to prices_features.csv (default: from config).",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type = Path,
-        default = DEFAULT_CONFIG.data_dir / "clustering",
-        help = "Root directory for PCA outputs (one subfolder per window).",
-    )
-    parser.add_argument(
-        "--variance_threshold",
-        type = float,
-        default = 0.80,
-        help = "Cumulative explained-variance target (default: 0.80).",
-    )
-    args = parser.parse_args()
-
-    run_all_windows(args.input_file, args.output_dir, args.variance_threshold)
-    print("Done.")
-=======
     return pca_df # returns the PCA coordinates
->>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
