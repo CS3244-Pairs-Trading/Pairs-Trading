@@ -116,7 +116,7 @@ def run_window(window_dir, window_label):
 
 if __name__ == "__main__":
     clustering_dir = DEFAULT_CONFIG.data_dir / "clustering"
-    for _, _, window_label in all_training_windows:
+    for _, _, window_label in all_training_windows():
         print(f"Window {window_label.replace('_', '–')}")
         run_window(clustering_dir / window_label, window_label)
         print()

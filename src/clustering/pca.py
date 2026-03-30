@@ -125,7 +125,7 @@ if __name__ == "__main__":
     df = pd.read_csv(input_file, parse_dates = ["Date"]).dropna(subset = ["SimpleReturn"])
     print(f"Total rows loaded: {len(df)}\n")
 
-    for start_date, end_date, window_label in all_training_windows:
+    for start_date, end_date, window_label in all_training_windows():
         print(f"Window {window_label.replace('_', '–')}")
         run_pca_for_window(df, start_date, end_date, window_label, output_dir)
         print()
