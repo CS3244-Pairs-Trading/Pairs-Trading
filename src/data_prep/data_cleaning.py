@@ -65,8 +65,15 @@ def _clean_single_stock_file(file_path: Path) -> pd.DataFrame | None:
     return df[OUTPUT_COLUMNS]
 
 
-def clean_selected_stock_data(input_dir: Path) -> pd.DataFrame:
-    """Clean all selected stock files into one long-format dataframe."""
+def clean_selected_stock_data(
+    input_dir: Path,
+    start_date: str = "2010-01-01",
+    end_date: str = "2017-12-31",
+) -> pd.DataFrame:
+    """Clean all selected stock files into one long-format dataframe.
+    
+    Only rows within [start_date, end_date] are kept.
+    """
 
     cleaned_frames: list[pd.DataFrame] = []
     for file_path in sorted(input_dir.glob("*.txt")):
@@ -78,6 +85,13 @@ def clean_selected_stock_data(input_dir: Path) -> pd.DataFrame:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     clean_df = pd.concat(cleaned_frames, ignore_index=True)
+
+    # filter to the analysis window
+    clean_df = clean_df[
+        (clean_df["Date"] >= pd.Timestamp(start_date)) &
+        (clean_df["Date"] <= pd.Timestamp(end_date))
+    ]
+
     clean_df = clean_df.sort_values(["Date", "Ticker"]).reset_index(drop=True)
 
     duplicate_dates_per_ticker = int(clean_df.duplicated(subset=["Ticker", "Date"]).sum())
@@ -94,12 +108,23 @@ def main(config: ProjectConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """Run data cleaning stage for selected top stocks."""
 
     ensure_directories(config)
-    clean_df = clean_selected_stock_data(config.selected_stocks_dir)
+
+    # use the train start and test end from config to define the full analysis window
+    start_date = config.train_window.start
+    end_date   = config.test_window.end
+
+    clean_df = clean_selected_stock_data(
+        config.selected_stocks_dir,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
     config.cleaned_prices_path.parent.mkdir(parents=True, exist_ok=True)
     clean_df.to_csv(config.cleaned_prices_path, index=False)
 
-    print(f"Cleaned rows: {len(clean_df)}")
-    print(f"Unique tickers: {clean_df['Ticker'].nunique() if not clean_df.empty else 0}")
+    print(f"Date range        : {start_date} to {end_date}")
+    print(f"Cleaned rows      : {len(clean_df)}")
+    print(f"Unique tickers    : {clean_df['Ticker'].nunique() if not clean_df.empty else 0}")
     print(f"Saved cleaned dataset to: {config.cleaned_prices_path}")
     return clean_df
 
