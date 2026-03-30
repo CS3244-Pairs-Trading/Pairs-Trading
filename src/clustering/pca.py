@@ -18,10 +18,7 @@ data/clustering/
 """
 
 from __future__ import annotations
-
-import argparse
 from pathlib import Path
-
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -29,10 +26,17 @@ import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-
 from src.config import DEFAULT_CONFIG, all_training_windows
 
+<<<<<<< Updated upstream
+from src.config import DEFAULT_CONFIG, all_training_windows
+=======
+VARIANCE_THRESHOLD = 0.80
+>>>>>>> Stashed changes
 
+# HELPER FUNCTIONS
+
+<<<<<<< Updated upstream
 '''# training windows: (start_date, end_date, folder_name)
 TRAINING_WINDOWS = [
     ("2010-01-01", "2012-12-31", "2010_2012"),
@@ -56,73 +60,55 @@ def load_return_matrix(
     Filter the long-format dataframe to a date window and pivot into a wide return matrix shaped (n_dates, n_tickers).
     Tickers missing more than (1 - coverage) of dates in the window are dropped.
     """
+=======
+# set up the return matrix
+def load_return_matrix(df, start_date, end_date, coverage = 0.8):
+    # filter the dataframe into a date window
+>>>>>>> Stashed changes
     window = df[(df["Date"] >= pd.Timestamp(start_date)) & (df["Date"] <= pd.Timestamp(end_date))]
-    matrix = window.pivot(index = "Date", columns = "Ticker", values = "SimpleReturn")
-    matrix = matrix.sort_index()
-    matrix = matrix.dropna(axis = 1, thresh = int(len(matrix) * coverage))
-    matrix = matrix.fillna(0)
-    tickers = matrix.columns.tolist()
-    return matrix, tickers
 
-def select_n_components(explained: np.ndarray, threshold: float) -> int:
-    """
-    Return the fewest components that cover at least `threshold` variance, capped at 15 to avoid the curse of dimensionality (according to the book).
-    """
-    cumulative = np.cumsum(explained)
-    n = int(np.searchsorted(cumulative, threshold) + 1)
-    n = max(2, n)
-    n = min(n, 15)  # capped at 15 as per the book
-    return n
+    # pivot the long dataframe into a wide return matrix (n_dates, n_tickers)
+    matrix = window.pivot(index = "Date", columns = "Ticker", values = "SimpleReturn").sort_index()
 
-############
-# plotting #
-############
+    # drop tickers missing more than (1 - coverage) of trading days, then fill remaining NaNs with 0
+    matrix = matrix.dropna(axis = 1, thresh = int(len(matrix) * coverage)).fillna(0)
+    return matrix, matrix.columns.tolist()
 
-def plot_variance(
-    pca: PCA,
-    threshold: float,
-    n_chosen: int,
-    out_path: Path,
-    window_label: str,
-) -> None:
+# return the components that cover at least the variance threshold
+def select_n_components(explained, threshold):
+    n = int(np.searchsorted(np.cumsum(explained), threshold) + 1)
+    return max(2, min(n, 15)) # no. of components is capped at 15 to avoid curse of dimensionality
+
+# PLOTTING
+
+# plot the variance
+def plot_variance(pca, threshold, n_chosen, out_path, window_label):
     explained = pca.explained_variance_ratio_
     cumulative = np.cumsum(explained)
     idx = np.arange(1, len(explained) + 1)
 
-    fig, ax = plt.subplots(figsize = (10, 5))
+    fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(idx, explained * 100, color = "#4c72b0", alpha = 0.6, label = "Individual (%)")
     ax.plot(idx, cumulative * 100, color = "#dd8452", linewidth = 2,
-            marker="o", markersize = 3, label = "Cumulative (%)")
+            marker = "o", markersize = 3, label = "Cumulative (%)")
     ax.axhline(threshold * 100, color = "#c44e52", linestyle = "--", linewidth = 1.2,
                label = f"Threshold {threshold:.0%}")
     ax.axvline(n_chosen, color = "#8172b2", linestyle = ":", linewidth = 1.2,
                label = f"Chosen n = {n_chosen}")
-
     ax.set_xlabel("Principal Component")
     ax.set_ylabel("Explained Variance (%)")
-    ax.set_title(f"PCA – SimpleReturn  ({window_label.replace('_', '–')})")
+    ax.set_title(f"PCA on Returns ({window_label.replace('_', '–')})")
     ax.legend(fontsize = 9)
     fig.tight_layout()
     fig.savefig(out_path, dpi = 150)
     plt.close(fig)
     print(f"Variance plot saved: {out_path}")
 
-#################
-# pca functions #
-#################
 
-def run_pca_for_window(
-    df: pd.DataFrame,
-    start_date: str,
-    end_date: str,
-    window_label: str,
-    output_dir: Path,
-    variance_threshold: float,
-) -> pd.DataFrame:
-    """
-    Run PCA for a single training window and save outputs to output_dir/window_label/.
-    Returns the PCA coordinates DataFrame.
-    """
+# PCA FUNCTIONS
+
+# run PCA for a each training window and save outputs to output_dir/window_label
+def run_pca_for_window(df, start_date, end_date, window_label, output_dir):
     window_dir = output_dir / window_label
     window_dir.mkdir(parents = True, exist_ok = True)
 
@@ -131,30 +117,23 @@ def run_pca_for_window(
     print(f"Return matrix: {ret_matrix.shape} (dates x tickers)")
 
     if len(tickers) < 2:
-        print(f"Skipping, not enough tickers after coverage filter.")
-        return pd.DataFrame()
+        print("Skip. Not enough tickers after coverage filter.")
+        return pd.DataFrame() 
 
     # 2. standardise
-    X = ret_matrix.T.values   # (n_tickers, n_dates)
-    X_scaled = StandardScaler().fit_transform(X)
+    # PCA expects (n_samples, n_features) transpose so each stock is a sample, each date a feature
+    X_scaled = StandardScaler().fit_transform(ret_matrix.T.values)
 
-    # 3. fit full PCA to find how many components we need
-    pca_full = PCA(random_state=42)
-    pca_full.fit(X_scaled)
+    # 3. fit on all components first so we can plot the full variance curve and pick n
+    pca_full = PCA(random_state=42).fit(X_scaled)
+    n_components = select_n_components(pca_full.explained_variance_ratio_, VARIANCE_THRESHOLD)
+    cumvar = np.cumsum(pca_full.explained_variance_ratio_)[n_components - 1]
+    print(f"Components: {n_components} ({cumvar:.2%} variance covered)")
 
-    n_components = select_n_components(pca_full.explained_variance_ratio_, variance_threshold)
-    cumvar_covered = np.cumsum(pca_full.explained_variance_ratio_)[n_components - 1]
-    print(f"Components: {n_components} ({cumvar_covered:.2%} variance covered)")
+    plot_variance(pca_full, VARIANCE_THRESHOLD, n_components, window_dir / "pca_variance_returns.png", window_label)
 
-    plot_variance(
-        pca_full, variance_threshold, n_components,
-        window_dir / "pca_variance_returns.png",
-        window_label,
-    )
-
-    # 4. refit with chosen number of components
-    pca = PCA(n_components = n_components, random_state = 42)
-    coords = pca.fit_transform(X_scaled) # (n_tickers, n_components)
+    # 4. refit with only the chosen number of components to get the reduced coordinates
+    coords = PCA(n_components=n_components, random_state=42).fit_transform(X_scaled)
 
     # 5. save coordinates
     col_names = [f"PC{i+1}" for i in range(n_components)]
@@ -165,6 +144,7 @@ def run_pca_for_window(
     pca_df.to_csv(out_csv)
     print(f"PCA saved: {out_csv}")
 
+<<<<<<< Updated upstream
     return pca_df
 
 def run_all_windows(
@@ -224,7 +204,22 @@ def main() -> None:
 
     run_all_windows(args.input_file, args.output_dir, args.variance_threshold)
     print("Done.")
+=======
+    return pca_df # returns the PCA coordinates
+>>>>>>> Stashed changes
 
 
 if __name__ == "__main__":
-    main()
+    input_file = DEFAULT_CONFIG.engineered_features_path
+    output_dir = DEFAULT_CONFIG.data_dir / "clustering"
+
+    print(f"Loading features from: {input_file}")
+    df = pd.read_csv(input_file, parse_dates = ["Date"]).dropna(subset = ["SimpleReturn"])
+    print(f"Total rows loaded: {len(df)}\n")
+
+    for start_date, end_date, window_label in all_training_windows:
+        print(f"Window {window_label.replace('_', '–')}")
+        run_pca_for_window(df, start_date, end_date, window_label, output_dir)
+        print()
+
+    print("Done.")
