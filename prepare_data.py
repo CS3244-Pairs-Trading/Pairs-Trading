@@ -4,6 +4,7 @@ from src.config import DEFAULT_CONFIG, ensure_directories
 from src.data_prep.data_cleaning import main as run_data_cleaning
 from src.data_prep.filter_stocks import main as run_filter_stocks
 from src.data_prep.isolate_top_1000 import main as run_isolate_stocks
+from src.data_prep.handle_outliers import main as run_handle_outliers
 from src.data_prep.returns import main as run_feature_engineering
 from src.data_prep.splits import describe_time_splits
 
@@ -14,19 +15,22 @@ def main() -> None:
     config = DEFAULT_CONFIG
     ensure_directories(config)
 
-    print("[1/5] Computing top liquid stocks...")
+    print("[1/6] Computing top liquid stocks...")
     top_stocks_df = run_filter_stocks(config)
 
-    print("[2/5] Isolating selected stock files...")
+    print("[2/6] Isolating selected stock files...")
     run_isolate_stocks(config)
 
-    print("[3/5] Cleaning selected stock data...")
+    print("[3/6] Cleaning selected stock data...")
     clean_df = run_data_cleaning(config)
 
-    print("[4/5] Building one engineered long-format dataset...")
+    print("[4/6] Handling suspicious outliers...")
+    clean_df = run_handle_outliers(config)
+
+    print("[5/6] Building one engineered long-format dataset...")
     features_df = run_feature_engineering(config)
 
-    print("[5/5] Time split definitions:")
+    print("[6/6] Time split definitions:")
     split_definitions = describe_time_splits()
     for split_name, bounds in split_definitions.items():
         print(f"  - {split_name}: {bounds['start']} to {bounds['end']}")
