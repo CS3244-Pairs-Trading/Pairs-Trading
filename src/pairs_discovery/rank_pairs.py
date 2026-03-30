@@ -135,6 +135,8 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
  
     beta = np.polyfit(p2, p1, deg=1)[0]
     spread = _compute_spread(p1, p2)
+
+    mean_intercept = np.mean(spread)
     
     hl = _half_life(spread)
     if not (min_half_life <= hl <= max_half_life): # if spread takes too long or too short to revert, it's not good for trading
@@ -144,13 +146,16 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
     if h_exp > 0.5: # if spread is diffusive, it's not good for mean reversion
         is_eligible = False
 
-    crossings = ((spread[:-1] * spread[1:]) < 0).sum()
+    # Check if spread crosses its mean enough times, otherwise it might be mean reverting but not tradable      
+    demeaned_spread = spread - np.mean(spread) # previously we assumed mean is 0, which is incorrect
+    crossings = ((demeaned_spread[:-1] * demeaned_spread[1:]) < 0).sum()
     if crossings < 12: # if spread doesn't cross mean enough times, it's not good for trading
         is_eligible = False
  
     result = {
         "pair": f"{s1}-{s2}",
         "cluster": cluster_id,
+        "mean_intercept": mean_intercept,
         "coint_pval": eg_pval,
         "hurst": h_exp,
         "mean_crossings": crossings,
@@ -237,9 +242,10 @@ def run_pair_discovery():
 
         prices_pivot = window_df.pivot(index="Date", columns="Ticker", values="Close")
 
-        cluster_file = DEFAULT_CONFIG.data_dir / "clustering" / label / "stock_clusters_best_k20.csv"
+        cluster_file = DEFAULT_CONFIG.data_dir / "clustering" / label / "optics_clusters.csv"
         cluster_df = pd.read_csv(cluster_file)
-        clusters_dict = get_clusters(cluster_df)
+        valid_clusters_df = cluster_df[cluster_df["Cluster"] != -1] # Filter noise
+        clusters_dict = get_clusters(valid_clusters_df)
 
         window_results_df = find_candidate_pairs(
             prices_df=prices_pivot,
@@ -263,8 +269,7 @@ def run_pair_discovery():
         output_path = DEFAULT_CONFIG.processed_dir / "discovered_pairs.csv"
         final_df.to_csv(output_path, index=False)
         print(f"\n{'='*50}")
-        print(f"STATE 3 COMPLETE: FULL AUDIT GENERATED")
-        print(f"Total pairs analyzed: {len(final_df)}")
+        print(f"Total pairs analyzed for all windows: {len(final_df)}")
         print(f"Tradeable pairs (is_eligible=True): {final_df['is_eligible'].sum()}")
         print(f"File: {output_path}")
         print(f"{'='*50}")
