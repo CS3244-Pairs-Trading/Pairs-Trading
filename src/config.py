@@ -45,7 +45,7 @@ INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
 EDA_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "eda"
 
-RAW_STOCKS_DIR = DATA_DIR / "raw" / "Stocks"
+RAW_STOCKS_DIR = DATA_DIR / "raw" 
 TOP_LIQUID_STOCKS_PATH = INTERIM_DIR / "top_1000_liquid_stocks.csv"
 SELECTED_STOCKS_DIR = INTERIM_DIR / "top_1000_stocks"
 
