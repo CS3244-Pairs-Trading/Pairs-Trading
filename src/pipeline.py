@@ -10,7 +10,6 @@ from src.data_prep.data_cleaning import clean_selected_stock_data
 from src.data_prep.filter_stocks import compute_top_liquid_stocks
 from src.data_prep.isolate_top_1000 import isolate_selected_stock_files
 from src.data_prep.returns import load_clean_prices
-from src.data_prep.splits import get_time_splits as _get_time_splits
 
 
 def load_raw_data(raw_data_dir: Path, pattern: str = "*.txt") -> list[Path]:
@@ -69,9 +68,3 @@ def load_clean_data(config: ProjectConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """Load cleaned prices from configured storage path."""
 
     return load_clean_prices(config.cleaned_prices_path)
-
-
-def get_time_splits(config: ProjectConfig = DEFAULT_CONFIG) -> dict[str, TimeWindow]:
-    """Get train/test windows from split module."""
-
-    return _get_time_splits(config)

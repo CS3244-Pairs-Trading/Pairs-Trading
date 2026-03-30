@@ -27,7 +27,7 @@ def main() -> None:
     features_df = run_feature_engineering(config)
 
     print("[5/5] Time split definitions:")
-    split_definitions = describe_time_splits(config)
+    split_definitions = describe_time_splits()
     for split_name, bounds in split_definitions.items():
         print(f"  - {split_name}: {bounds['start']} to {bounds['end']}")
 

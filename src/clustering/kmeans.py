@@ -28,19 +28,19 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
-from src.config import DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG, all_training_windows
 
 warnings.filterwarnings("ignore")
 
 
-# training windows must match what pca.py produced
+'''# training windows must match what pca.py produced
 TRAINING_WINDOWS = [
     ("2010-01-01", "2012-12-31", "2010_2012"),
     ("2010-01-01", "2013-12-31", "2010_2013"),
     ("2010-01-01", "2014-12-31", "2010_2014"),
     ("2010-01-01", "2015-12-31", "2010_2015"),
     ("2010-01-01", "2016-12-31", "2010_2016"),
-]
+]'''
 
 # 50 colours for scatter plots
 _PALETTE = (list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.CSS4_COLORS.values())[::8][:40])
@@ -256,7 +256,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    for start_date, end_date, window_label in TRAINING_WINDOWS:
+    for start_date, end_date, window_label in all_training_windows(DEFAULT_CONFIG):
         window_dir = args.clustering_dir / window_label
         print(f"Window {window_label.replace('_', '–')}")
         run_kmeans_for_window(window_dir, window_label, args.k_values)

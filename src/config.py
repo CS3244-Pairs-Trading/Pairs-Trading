@@ -6,10 +6,22 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class TimeWindow:
-    """Represents a simple inclusive time window."""
-
     start: str
     end: str
+
+
+@dataclass(frozen=True)
+class ExpandingFold:
+    label: str
+    train: TimeWindow
+    val: TimeWindow
+
+
+@dataclass(frozen=True)
+class HoldoutSplit:
+    label: str
+    train: TimeWindow
+    test: TimeWindow
 
 
 @dataclass(frozen=True)
@@ -33,10 +45,11 @@ class ProjectConfig:
     liquidity_start_date: str | None
     liquidity_end_date: str | None
 
-    train_window: TimeWindow
-    val_window: TimeWindow
+    '''train_window: TimeWindow
     test_window: TimeWindow
-    embargo_days: int
+    windows: tuple[tuple[str, str, str], ...]'''
+    expanding_folds: tuple[ExpandingFold, ...]
+    holdout_split: HoldoutSplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,11 +79,45 @@ DEFAULT_CONFIG = ProjectConfig(
     top_n_stocks=1000,
     liquidity_start_date=None,
     liquidity_end_date=None,
-    train_window=TimeWindow(start="2010-01-01", end="2015-12-31"),
-    val_window=TimeWindow(start="2016-01-01", end="2016-12-31"),
-    test_window=TimeWindow(start="2017-01-01", end="2017-12-31"),
-    embargo_days=0,
+    expanding_folds=(
+        ExpandingFold(
+            label="2010_2012",
+            train=TimeWindow("2010-01-01", "2012-12-31"),
+            val=TimeWindow("2013-01-01", "2013-12-31")
+        ),
+        ExpandingFold(
+            label="2010_2013",
+            train=TimeWindow("2010-01-01", "2013-12-31"),
+            val=TimeWindow("2014-01-01", "2014-12-31")
+        ),
+        ExpandingFold(
+            label="2010_2014",
+            train=TimeWindow("2010-01-01", "2014-12-31"),
+            val=TimeWindow("2015-01-01", "2015-12-31")
+        ),
+        ExpandingFold(
+            label="2010_2015",
+            train=TimeWindow("2010-01-01", "2015-12-31"),
+            val=TimeWindow("2016-01-01", "2016-12-31")
+        )
+    ),
+    holdout_split=HoldoutSplit(
+        label="2010_2016",
+        train=TimeWindow("2010-01-01", "2016-12-31"),
+        test=TimeWindow("2017-01-01", "2017-12-31")
+    )
 )
+'''
+    train_window=TimeWindow(start="2010-01-01", end="2016-12-31"),
+    test_window=TimeWindow(start="2017-01-01", end="2017-12-31"),
+    windows=(
+        ("2010-01-01", "2012-12-31", "2010_2012"),
+        ("2010-01-01", "2013-12-31", "2010_2013"),
+        ("2010-01-01", "2014-12-31", "2010_2014"),
+        ("2010-01-01", "2015-12-31", "2010_2015"),
+        ("2010-01-01", "2016-12-31", "2010_2016"),
+    ),
+'''
 
 
 def ensure_directories(config: ProjectConfig = DEFAULT_CONFIG) -> None:
@@ -84,3 +131,19 @@ def ensure_directories(config: ProjectConfig = DEFAULT_CONFIG) -> None:
         config.selected_stocks_dir,
     ]:
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def all_training_windows(config: ProjectConfig = DEFAULT_CONFIG,) -> tuple[tuple[str, str, str], ...]:
+    windows = tuple(
+        (fold.train.start, fold.train.end, fold.label)
+        for fold in config.expanding_folds
+    )
+
+    holdout = config.holdout_split
+    holdout_window = (
+        holdout.train.start,
+        holdout.train.end,
+        holdout.label,
+    )
+
+    return windows + (holdout_window,)
