@@ -30,17 +30,17 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from src.config import DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG, all_training_windows
 
 
-# training windows: (start_date, end_date, folder_name)
+'''# training windows: (start_date, end_date, folder_name)
 TRAINING_WINDOWS = [
     ("2010-01-01", "2012-12-31", "2010_2012"),
     ("2010-01-01", "2013-12-31", "2010_2013"),
     ("2010-01-01", "2014-12-31", "2010_2014"),
     ("2010-01-01", "2015-12-31", "2010_2015"),
     ("2010-01-01", "2016-12-31", "2010_2016"),
-]
+]'''
 
 ####################
 # helper functions #
@@ -178,7 +178,15 @@ def run_all_windows(
     df = df.dropna(subset = ["SimpleReturn"])
     print(f"Total rows loaded: {len(df)}\n")
 
-    for start_date, end_date, window_label in TRAINING_WINDOWS:
+    '''for start_date, end_date, window_label in DEFAULT_CONFIG.windows:
+        print(f"Window {window_label.replace('_', '–')}")
+        run_pca_for_window(
+            df, start_date, end_date, window_label,
+            output_dir, variance_threshold,
+        )
+        print()'''
+    
+    for start_date, end_date, window_label in all_training_windows(DEFAULT_CONFIG):
         print(f"Window {window_label.replace('_', '–')}")
         run_pca_for_window(
             df, start_date, end_date, window_label,

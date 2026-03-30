@@ -67,8 +67,8 @@ def _clean_single_stock_file(file_path: Path) -> pd.DataFrame | None:
 
 def clean_selected_stock_data(
     input_dir: Path,
-    start_date: str = "2010-01-01",
-    end_date: str = "2017-12-31",
+    start_date = DEFAULT_CONFIG.holdout_split.train.start, # 2010-01-01
+    end_date = DEFAULT_CONFIG.holdout_split.test.end # 2017-12-31
 ) -> pd.DataFrame:
     """Clean all selected stock files into one long-format dataframe.
     
@@ -110,8 +110,8 @@ def main(config: ProjectConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     ensure_directories(config)
 
     # use the train start and test end from config to define the full analysis window
-    start_date = config.train_window.start
-    end_date   = config.test_window.end
+    start_date = config.holdout_split.train.start # 2010-01-01
+    end_date   = config.holdout_split.test.end # 2017-12-31
 
     clean_df = clean_selected_stock_data(
         config.selected_stocks_dir,
