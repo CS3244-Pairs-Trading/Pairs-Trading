@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from src.config import DEFAULT_CONFIG, ensure_directories
 from src.data_prep.data_cleaning import main as run_data_cleaning
 from src.data_prep.filter_stocks import main as run_filter_stocks
@@ -12,7 +14,11 @@ from src.data_prep.splits import describe_time_splits
 def main() -> None:
     """Run the data preparation pipeline end-to-end."""
 
-    config = DEFAULT_CONFIG
+    config = replace(
+        DEFAULT_CONFIG,
+        analysis_start_date=DEFAULT_CONFIG.holdout_split.train.start,
+        analysis_end_date=DEFAULT_CONFIG.holdout_split.test.end
+    )
     ensure_directories(config)
 
     print("[1/6] Computing top liquid stocks...")

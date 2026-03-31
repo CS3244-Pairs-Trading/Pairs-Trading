@@ -67,12 +67,12 @@ def _clean_single_stock_file(file_path: Path) -> pd.DataFrame | None:
 
 def clean_selected_stock_data(
     input_dir: Path,
-     start_date = DEFAULT_CONFIG.holdout_split.train.start, # 2010-01-01
-     end_date = DEFAULT_CONFIG.holdout_split.test.end # 2017-12-31
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> pd.DataFrame:
     """Clean all selected stock files into one long-format dataframe.
-    
-    Only rows within [start_date, end_date] are kept.
+
+    If start_date/end_date are provided, only rows within the range are kept.
     """
 
     cleaned_frames: list[pd.DataFrame] = []
@@ -86,11 +86,11 @@ def clean_selected_stock_data(
 
     clean_df = pd.concat(cleaned_frames, ignore_index=True)
 
-    # filter to the analysis window
-    clean_df = clean_df[
-        (clean_df["Date"] >= pd.Timestamp(start_date)) &
-        (clean_df["Date"] <= pd.Timestamp(end_date))
-    ]
+    if start_date is not None:
+        clean_df = clean_df[clean_df["Date"] >= pd.Timestamp(start_date)]
+
+    if end_date is not None:
+        clean_df = clean_df[clean_df["Date"] <= pd.Timestamp(end_date)]
 
     clean_df = clean_df.sort_values(["Date", "Ticker"]).reset_index(drop=True)
 
@@ -110,8 +110,8 @@ def main(config: ProjectConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     ensure_directories(config)
 
     # use the train start and test end from config to define the full analysis window
-    start_date = config.holdout_split.train.start # 2010-01-01
-    end_date   = config.holdout_split.test.end # 2017-12-31
+    start_date = config.analysis_start_date
+    end_date = config.analysis_end_date
 
     clean_df = clean_selected_stock_data(
         config.selected_stocks_dir,
