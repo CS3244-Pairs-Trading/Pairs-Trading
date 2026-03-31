@@ -45,9 +45,8 @@ class ProjectConfig:
     liquidity_start_date: str | None
     liquidity_end_date: str | None
 
-    '''train_window: TimeWindow
-    test_window: TimeWindow
-    windows: tuple[tuple[str, str, str], ...]'''
+    analysis_start_date: str | None
+    analysis_end_date: str | None
     expanding_folds: tuple[ExpandingFold, ...]
     holdout_split: HoldoutSplit
 
@@ -79,6 +78,8 @@ DEFAULT_CONFIG = ProjectConfig(
     top_n_stocks=1000,
     liquidity_start_date=None,
     liquidity_end_date=None,
+    analysis_start_date=None,
+    analysis_end_date=None,
     expanding_folds=(
         ExpandingFold(
             label="2010_2012",
@@ -107,17 +108,6 @@ DEFAULT_CONFIG = ProjectConfig(
         test=TimeWindow("2017-01-01", "2017-12-31")
     )
 )
-'''
-    train_window=TimeWindow(start="2010-01-01", end="2016-12-31"),
-    test_window=TimeWindow(start="2017-01-01", end="2017-12-31"),
-    windows=(
-        ("2010-01-01", "2012-12-31", "2010_2012"),
-        ("2010-01-01", "2013-12-31", "2010_2013"),
-        ("2010-01-01", "2014-12-31", "2010_2014"),
-        ("2010-01-01", "2015-12-31", "2010_2015"),
-        ("2010-01-01", "2016-12-31", "2010_2016"),
-    ),
-'''
 
 
 def ensure_directories(config: ProjectConfig = DEFAULT_CONFIG) -> None:
