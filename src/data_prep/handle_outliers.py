@@ -1,30 +1,3 @@
-"""
-handle_outliers.py
-------------------
-Detects and fixes suspicious rows in prices_clean.csv.
-
-Logic:
-    A row is flagged as suspicious if:
-        |daily_return| > RETURN_THRESHOLD   (extreme price move)
-        AND
-        volume < VOLUME_MULTIPLIER * ticker_median_volume  (low trading activity)
-
-    Real large moves (GFC, flash crash) attract high volume — they are kept.
-    Data errors (bad price entry, unadjusted split) show extreme return but low
-    volume — these are masked and forward-filled.
-
-Output:
-    Overwrites data/interim/prices_clean.csv with corrected Close prices.
-    Returns the cleaned DataFrame for use in the pipeline.
-
-Usage (standalone):
-    python src/data_prep/handle_outliers.py
-
-Usage (via pipeline):
-    from src.data_prep.handle_outliers import main as run_handle_outliers
-    run_handle_outliers(config)
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

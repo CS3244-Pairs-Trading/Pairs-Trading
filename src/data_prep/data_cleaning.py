@@ -67,8 +67,8 @@ def _clean_single_stock_file(file_path: Path) -> pd.DataFrame | None:
 
 def clean_selected_stock_data(
     input_dir: Path,
-    start_date = DEFAULT_CONFIG.holdout_split.train.start, # 2010-01-01
-    end_date = DEFAULT_CONFIG.holdout_split.test.end # 2017-12-31
+     start_date = DEFAULT_CONFIG.holdout_split.train.start, # 2010-01-01
+     end_date = DEFAULT_CONFIG.holdout_split.test.end # 2017-12-31
 ) -> pd.DataFrame:
     """Clean all selected stock files into one long-format dataframe.
     
