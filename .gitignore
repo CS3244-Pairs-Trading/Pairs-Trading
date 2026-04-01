@@ -17,3 +17,4 @@ src/pairs_discovery/__cache__/
 .DS_Storecleaned_stocks.csv
 .DS_Store
 **/.DS_Store
+.pair_cache.pkl
