@@ -323,7 +323,9 @@ def build_features_for_pairs(
         index="Date", columns="Ticker", values="Close", aggfunc="last"
     ).sort_index()
 
-    log_prices_wide = np.log(prices_wide.clip(lower=1e-8))
+    log_prices_wide = window_df.pivot_table(
+        index="Date", columns="Ticker", values="LogPrice", aggfunc="last"
+    ).sort_index()
 
     returns_wide = window_df.pivot_table(
         index="Date", columns="Ticker", values="SimpleReturn", aggfunc="last"

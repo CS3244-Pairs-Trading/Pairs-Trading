@@ -5,6 +5,42 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class BacktestParamsConfig:
+    """
+    Market constants and default strategy parameters for backtest_engine.py.
+
+    The z-score fields are defaults used when ZScoreSignal is auto-created
+    from BacktestConfig; they have no effect when a custom SignalGenerator
+    is passed to engine.run().
+    """
+    # Market constants
+    trading_days:     int   = 252    # trading days per calendar year
+    risk_free_rate:   float = 0.0    # annualised risk-free rate (0 = no hurdle)
+    fitness_tv_floor: float = 0.125  # turnover floor in Fitness formula (12.5 %)
+
+    # Z-score signal defaults
+    entry_z:            float = 2.0    # enter when |z| crosses this
+    exit_z:             float = 0.5    # exit  when |z| falls below this
+    stop_z:             float = 4.0    # stop-loss at this |z|  (0 = disabled)
+    use_rolling_zscore: bool  = False  # False = fixed training stats; True = rolling
+    rolling_lookback:   int   = 63     # rolling window in trading days (≈ 3 months)
+
+    # Capital & portfolio
+    initial_capital:      float = 1_000_000.0
+    n_top_pairs:          int   = 50    # max pairs per training window
+    transaction_cost_bps: float = 10.0  # basis points per side per trade leg
+    min_pair_score:       float = 0.0   # discard pairs below this composite score
+    margin_multiplier: float = 20.0
+    output_dir: str = "outputs/backtest"
+
+DEFAULT_BACKTEST_PARAMS = BacktestParamsConfig()
+
+
+# ──────────────────────────────────────────────────────────
+# PIPELINE / TIME-WINDOW CONFIGS  (unchanged below)
+# ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
 class TimeWindow:
     start: str
     end: str
