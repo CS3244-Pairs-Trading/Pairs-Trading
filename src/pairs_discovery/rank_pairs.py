@@ -220,15 +220,6 @@ def run_pair_discovery():
     raw_engineered_path = DEFAULT_CONFIG.engineered_features_path
     full_df = pd.read_csv(raw_engineered_path, parse_dates=["Date"]) # load raw prices for pair selection
 
-    '''# Copy windows definition from src/clustering/pca.py
-    WINDOWS = [
-        ("2010-01-01", "2012-12-31", "2010_2012"),
-        ("2010-01-01", "2013-12-31", "2010_2013"),
-        ("2010-01-01", "2014-12-31", "2010_2014"),
-        ("2010-01-01", "2015-12-31", "2010_2015"),
-        ("2010-01-01", "2016-12-31", "2010_2016"),
-    ]'''
-
     all_window_results = []
     for start_date, end_date, label in all_training_windows(DEFAULT_CONFIG):
         print("Currently processing window:", label)
