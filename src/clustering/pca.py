@@ -117,17 +117,22 @@ def run_pca_for_window(df, start_date, end_date, window_label, output_dir):
     return pca_df # returns the PCA coordinates
 
 
-if __name__ == "__main__":
-    input_file = DEFAULT_CONFIG.engineered_features_path
-    output_dir = DEFAULT_CONFIG.data_dir / "clustering"
+def run_pca_pipeline(config=DEFAULT_CONFIG) -> None:
+    input_file = config.engineered_features_path
+    output_dir = config.data_dir / "clustering"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading features from: {input_file}")
-    df = pd.read_csv(input_file, parse_dates = ["Date"]).dropna(subset = ["SimpleReturn"])
+    df = pd.read_csv(input_file, parse_dates=["Date"]).dropna(subset=["SimpleReturn"])
     print(f"Total rows loaded: {len(df)}\n")
 
-    for start_date, end_date, window_label in all_training_windows():
+    for start_date, end_date, window_label in all_training_windows(config):
         print(f"Window {window_label.replace('_', '–')}")
         run_pca_for_window(df, start_date, end_date, window_label, output_dir)
         print()
 
     print("Done.")
+
+
+if __name__ == "__main__":
+    run_pca_pipeline(DEFAULT_CONFIG)

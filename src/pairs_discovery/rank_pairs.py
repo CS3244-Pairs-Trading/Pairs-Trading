@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # NOTE: Don't forget to run "pip install -r requirements.txt" 
 
-import os
 import hashlib
 import pickle
 from itertools import combinations
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,8 +13,7 @@ from scipy.stats import spearmanr
 from statsmodels.tsa.stattools import coint
 from joblib import Parallel, delayed
 
-from pathlib import Path
-from src.config import DEFAULT_CONFIG, all_training_windows
+from src.config import DEFAULT_CONFIG, ProjectConfig, all_training_windows
 
 def get_clusters(pca_df: pd.DataFrame) -> dict: # Based on data/clustering/2010_2012/stock_clusters_best_k20.csv
     return pca_df.groupby("Cluster")["Ticker"].apply(list).to_dict()
@@ -77,11 +76,11 @@ def _hurst_exp(spread: np.ndarray, max_lag: int = 40) -> float: # set to 2 month
 # Performance Optimization
 class PairCache:
     # Cache key = ticker names and fingerprint of the last 5 rows of input data
-    def __init__(self, path: str):
-        self.path  = path
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
         self.store = {}
-        if os.path.exists(path):
-            with open(path, "rb") as f:
+        if self.path.exists():
+            with self.path.open("rb") as f:
                 self.store = pickle.load(f)
  
     def get(self, s1, s2, fingerprint):
@@ -91,7 +90,8 @@ class PairCache:
         self.store[f"{s1}__{s2}__{fingerprint}"] = value
  
     def flush(self):
-        with open(self.path, "wb") as f:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("wb") as f:
             pickle.dump(self.store, f)
 
 def data_fingerprint(arr: np.ndarray) -> str:
@@ -169,7 +169,7 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
     cache.set(s1, s2, fingerprint, result)
     return result
 
-def find_candidate_pairs( prices_df: pd.DataFrame, clusters: dict, n_jobs: int = -1, cache_path: str = ".pair_cache.pkl", 
+def find_candidate_pairs( prices_df: pd.DataFrame, clusters: dict, n_jobs: int = -1, cache_path: str | Path = ".pair_cache.pkl",
     coint_threshold: float = 0.05, min_half_life: float = 1, max_half_life: float = 252, hurst_max_lag: int = 40) -> pd.DataFrame:
  
     log_prices = np.log(prices_df)
@@ -216,12 +216,12 @@ def find_candidate_pairs( prices_df: pd.DataFrame, clusters: dict, n_jobs: int =
     return df
 
 ### Main Execution Logic
-def run_pair_discovery():
-    raw_engineered_path = DEFAULT_CONFIG.engineered_features_path
+def run_pair_discovery(config: ProjectConfig = DEFAULT_CONFIG, cluster_source: str = "optics") -> pd.DataFrame:
+    raw_engineered_path = config.engineered_features_path
     full_df = pd.read_csv(raw_engineered_path, parse_dates=["Date"]) # load raw prices for pair selection
 
     all_window_results = []
-    for start_date, end_date, label in all_training_windows(DEFAULT_CONFIG):
+    for start_date, end_date, label in all_training_windows(config):
         print("Currently processing window:", label)
         # Filter and pivot data for this window
         window_mask = (full_df["Date"] >= start_date) & (full_df["Date"] <= end_date)
@@ -233,7 +233,11 @@ def run_pair_discovery():
 
         prices_pivot = window_df.pivot(index="Date", columns="Ticker", values="Close")
 
-        cluster_file = DEFAULT_CONFIG.data_dir / "clustering" / label / "optics_clusters.csv"
+        cluster_file = config.data_dir / "clustering" / label / f"{cluster_source}_clusters.csv"
+        if not cluster_file.exists():
+            print(f"Warning: {cluster_file} not found for window {label}. Skipping processing.")
+            continue
+
         cluster_df = pd.read_csv(cluster_file)
         valid_clusters_df = cluster_df[cluster_df["Cluster"] != -1] # Filter noise
         clusters_dict = get_clusters(valid_clusters_df)
@@ -242,6 +246,7 @@ def run_pair_discovery():
             prices_df=prices_pivot,
             clusters=clusters_dict,
             n_jobs=-1,
+            cache_path=config.interim_dir / f".pair_cache_{label}_{cluster_source}.pkl",
             coint_threshold=0.05
         )
 
@@ -257,18 +262,20 @@ def run_pair_discovery():
         final_df = pd.concat(all_window_results, ignore_index=True)
         final_df = final_df.sort_values(by=["is_eligible", "score"], ascending=[False, False])
         
-        output_path = DEFAULT_CONFIG.processed_dir / "discovered_pairs.csv"
+        output_path = config.processed_dir / "discovered_pairs.csv"
         final_df.to_csv(output_path, index=False)
         print(f"\n{'='*50}")
         print(f"Total pairs analyzed for all windows: {len(final_df)}")
         print(f"Tradeable pairs (is_eligible=True): {final_df['is_eligible'].sum()}")
         print(f"File: {output_path}")
         print(f"{'='*50}")
+        return final_df
     else:
         print("\n[FAILED] No eligible pairs found in any window.")
+        return pd.DataFrame()
 
 if __name__ == "__main__":
-    run_pair_discovery()
+    run_pair_discovery(DEFAULT_CONFIG)
 
 
 

@@ -117,9 +117,14 @@ def run_window(window_dir, window_label):
                      window_label, window_dir / "optics_2d.png")
 
 
-if __name__ == "__main__":
-    clustering_dir = DEFAULT_CONFIG.data_dir / "clustering"
-    for _, _, window_label in all_training_windows():
+def run_optics_pipeline(config=DEFAULT_CONFIG) -> None:
+    clustering_dir = config.data_dir / "clustering"
+    clustering_dir.mkdir(parents=True, exist_ok=True)
+    for _, _, window_label in all_training_windows(config):
         print(f"Window {window_label.replace('_', '–')}")
         run_window(clustering_dir / window_label, window_label)
         print()
+
+
+if __name__ == "__main__":
+    run_optics_pipeline(DEFAULT_CONFIG)
