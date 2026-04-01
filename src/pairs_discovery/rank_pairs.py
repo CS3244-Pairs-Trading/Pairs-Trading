@@ -169,10 +169,9 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
     cache.set(s1, s2, fingerprint, result)
     return result
 
-def find_candidate_pairs( prices_df: pd.DataFrame, clusters: dict, n_jobs: int = -1, cache_path: str = ".pair_cache.pkl", 
+def find_candidate_pairs( prices_df: pd.DataFrame, clusters: dict, log_prices: pd.DataFrame, n_jobs: int = -1, cache_path: str = ".pair_cache.pkl",
     coint_threshold: float = 0.05, min_half_life: float = 1, max_half_life: float = 252, hurst_max_lag: int = 40) -> pd.DataFrame:
- 
-    log_prices = np.log(prices_df)
+
     price_arr, tickers = log_prices.values, log_prices.columns.tolist()
     ticker_pos = {t: i for i, t in enumerate(tickers)}
  
@@ -232,6 +231,7 @@ def run_pair_discovery():
             continue
 
         prices_pivot = window_df.pivot(index="Date", columns="Ticker", values="Close")
+        log_prices_pivot = window_df.pivot(index="Date", columns="Ticker", values="LogPrice")
 
         cluster_file = DEFAULT_CONFIG.data_dir / "clustering" / label / "optics_clusters.csv"
         cluster_df = pd.read_csv(cluster_file)
@@ -241,6 +241,7 @@ def run_pair_discovery():
         window_results_df = find_candidate_pairs(
             prices_df=prices_pivot,
             clusters=clusters_dict,
+            log_prices=log_prices_pivot,
             n_jobs=-1,
             coint_threshold=0.05
         )
