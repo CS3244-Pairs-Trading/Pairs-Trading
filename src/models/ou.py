@@ -4,6 +4,8 @@ from numba import njit
 
 from src.config import DEFAULT_CONFIG, all_training_windows
 
+from src.pairs_discovery.kalman_hedge import kalman_spread
+
 # The OU process in continuous time is: dX_t = κ(θ - X_t)dt + σ dW_t
 # Discretised over dt=1 day it becomes an AR(1): X_t = a + b·X_{t-1} + ε_t, ε_t ~ N(0, σ_ε²) where:
 #   b = exp(-κ·dt) (AR coefficient)
@@ -94,14 +96,36 @@ class OUOrchestrator:
     def run_walk_forward(self, log_price_df: pd.DataFrame, pairs_metadata: pd.DataFrame) -> pd.DataFrame:
         all_signals = []
         eligible_pairs = pairs_metadata[pairs_metadata['is_eligible'] == True]
+        available_tickers = set(log_price_df.columns)
 
         for _, meta in eligible_pairs.iterrows():
-            s1, s2 = meta['pair'].split('-')
-            beta = meta['initial_beta']
+            pair_str = str(meta['pair'])
+            found_tickers = []
+            for ticker in available_tickers:
+                # We look for the ticker followed by a hyphen or at the end of the string
+                if pair_str.startswith(ticker + "-"):
+                    s1 = ticker
+                    s2 = pair_str.replace(ticker + "-", "", 1)
+                    if s2 in available_tickers:
+                        found_tickers = [s1, s2]
+                        break
+            
+            if len(found_tickers) != 2:
+                try:
+                    s1, s2 = pair_str.rsplit('-', 1)
+                except ValueError:
+                    continue
+            else:
+                s1, s2 = found_tickers
+
+            if s1 not in available_tickers or s2 not in available_tickers:
+                continue
 
             # Construct the log-spread
-            spread = (log_price_df[s1] - beta * log_price_df[s2]).values
+            # beta = meta['initial_beta']
+            # spread = (log_price_df[s1] - beta * log_price_df[s2]).values
             dates = log_price_df.index
+            spread, _ = kalman_spread(log_price_df[s1].values, log_price_df[s2].values, delta=0.01)
             
             model = OUModel()
             pair_results = []
@@ -123,7 +147,7 @@ class OUOrchestrator:
                     'kappa': model.kappa,
                     'theta': model.theta,
                     'sigma': model.sigma,
-                    "eq_std":    model.eq_std,
+                    "eq_std": model.eq_std,
                     "half_life": model.half_life,
                 })
 
@@ -154,10 +178,11 @@ def run_ou_model():
         print("Currently processing window:", label)
         window_pairs = pairs_df[pairs_df['training_window'] == label]
 
-        val_start = end_date
+        val_start = pd.to_datetime(end_date)
         val_end = val_start + pd.DateOffset(years=1)
         hist_start = val_start - pd.DateOffset(days=120) 
 
+        log_prices_df.index = pd.to_datetime(log_prices_df.index)
         val_prices = log_prices_df.loc[hist_start : val_end]
         if val_prices.empty:
             print(f"  No price data for window {label}, skipping.")
