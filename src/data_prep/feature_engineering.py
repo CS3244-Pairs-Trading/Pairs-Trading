@@ -235,7 +235,8 @@ def compute_pair_features(
 # ---------------------------------------------------------------------------
 
 def compute_labels(
-    spread: pd.Series,
+    spread_ols: pd.Series,
+    spread_kalman: pd.Series | None = None,
     horizons: tuple[int, ...] = (5, 10),
 ) -> pd.DataFrame:
     """
@@ -243,13 +244,14 @@ def compute_labels(
 
     Binary label: 1 if |spread| moved closer to the mean over the next N days.
     Continuous label: the actual spread change over the next N days (for regression).
+    Kalman labels: same but using the Kalman spread as target.
 
     The labels use FUTURE data — they are targets, not features.
     They must only be used in the training set to avoid leakage.
     """
-    labels = pd.DataFrame(index=spread.index)
-    rolling_mean = spread.rolling(60, min_periods=30).mean()
-    demeaned = spread - rolling_mean
+    labels = pd.DataFrame(index=spread_ols.index)
+    rolling_mean = spread_ols.rolling(60, min_periods=30).mean()
+    demeaned = spread_ols - rolling_mean
 
     for h in horizons:
         future_demeaned = demeaned.shift(-h)
@@ -259,8 +261,12 @@ def compute_labels(
             future_demeaned.abs() < demeaned.abs()
         ).astype(float)
 
-        # Continuous: spread change (for regression models)
-        labels[f"label_continuous_{h}d"] = spread.shift(-h) - spread
+        # Continuous: OLS spread change (for regression models)
+        labels[f"label_continuous_{h}d"] = spread_ols.shift(-h) - spread_ols
+
+        # Kalman spread change (for Kalman variant comparison)
+        if spread_kalman is not None:
+            labels[f"label_kalman_{h}d"] = spread_kalman.shift(-h) - spread_kalman
 
     return labels
 

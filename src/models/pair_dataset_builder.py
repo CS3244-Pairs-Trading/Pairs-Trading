@@ -231,7 +231,8 @@ def build_pair_dataset(
         volume_b=vol_b,
         kalman_delta=kalman_delta,
     )
-    labels = compute_labels(features["spread_ols"], horizons=label_horizons)
+    kalman_col = features["spread_kalman"] if "spread_kalman" in features.columns else None
+    labels = compute_labels(features["spread_ols"], spread_kalman=kalman_col, horizons=label_horizons)
 
     pair_df = pd.concat([raw, features, labels], axis=1)
     pair_df = pair_df.loc[:, ~pair_df.columns.duplicated()]
