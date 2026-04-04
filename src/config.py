@@ -37,7 +37,7 @@ DEFAULT_BACKTEST_PARAMS = BacktestParamsConfig()
 
 
 # ──────────────────────────────────────────────────────────
-# PIPELINE / TIME-WINDOW CONFIGS  (unchanged below)
+# PIPELINE / TIME-WINDOW CONFIGS
 # ──────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -93,12 +93,26 @@ INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
 EDA_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "eda"
 
-RAW_STOCKS_DIR = DATA_DIR / "raw" 
+RAW_STOCKS_DIR = DATA_DIR / "raw"
 TOP_LIQUID_STOCKS_PATH = INTERIM_DIR / "top_1000_liquid_stocks.csv"
 SELECTED_STOCKS_DIR = INTERIM_DIR / "top_1000_stocks"
 
 CLEANED_PRICES_PATH = INTERIM_DIR / "prices_clean.csv"
 ENGINEERED_FEATURES_PATH = PROCESSED_DIR / "prices_features.csv"
+
+# ──────────────────────────────────────────────────────────
+# SLIDING WINDOW CONFIGURATION (3-year lookback)
+#
+# Each fold trains on the most recent 3 years and validates
+# on the following year. Old data is dropped so the model
+# and pair selection reflect the current market regime.
+#
+#   Fold 1: Train 2010–2012, Val 2013
+#   Fold 2: Train 2011–2013, Val 2014
+#   Fold 3: Train 2012–2014, Val 2015
+#   Fold 4: Train 2013–2015, Val 2016
+#   Holdout: Train 2014–2016, Test 2017
+# ──────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = ProjectConfig(
     project_root=PROJECT_ROOT,
@@ -123,26 +137,26 @@ DEFAULT_CONFIG = ProjectConfig(
             val=TimeWindow("2013-01-01", "2013-12-31")
         ),
         ExpandingFold(
-            label="2010_2013",
-            train=TimeWindow("2010-01-01", "2013-12-31"),
+            label="2011_2013",
+            train=TimeWindow("2011-01-01", "2013-12-31"),
             val=TimeWindow("2014-01-01", "2014-12-31")
         ),
         ExpandingFold(
-            label="2010_2014",
-            train=TimeWindow("2010-01-01", "2014-12-31"),
+            label="2012_2014",
+            train=TimeWindow("2012-01-01", "2014-12-31"),
             val=TimeWindow("2015-01-01", "2015-12-31")
         ),
         ExpandingFold(
-            label="2010_2015",
-            train=TimeWindow("2010-01-01", "2015-12-31"),
+            label="2013_2015",
+            train=TimeWindow("2013-01-01", "2015-12-31"),
             val=TimeWindow("2016-01-01", "2016-12-31")
-        )
+        ),
     ),
     holdout_split=HoldoutSplit(
-        label="2010_2016",
-        train=TimeWindow("2010-01-01", "2016-12-31"),
+        label="2014_2016",
+        train=TimeWindow("2014-01-01", "2016-12-31"),
         test=TimeWindow("2017-01-01", "2017-12-31")
-    )
+    ),
 )
 
 
