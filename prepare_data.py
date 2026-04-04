@@ -16,7 +16,7 @@ def main() -> None:
 
     config = replace(
         DEFAULT_CONFIG,
-        analysis_start_date=DEFAULT_CONFIG.holdout_split.train.start,
+        analysis_start_date=DEFAULT_CONFIG.expanding_folds[0].train.start,  # ← always "2010-01-01"
         analysis_end_date=DEFAULT_CONFIG.holdout_split.test.end
     )
     ensure_directories(config)
