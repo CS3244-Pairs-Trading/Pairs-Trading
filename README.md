@@ -128,7 +128,8 @@ Spreads:      spread_ols, spread_kalman
 Features:     z_score, z_score_kalman, momentum_5d, momentum_10d,
               rolling_vol_20d, rolling_vol_60d, rolling_corr_60d,
               days_since_crossing, kalman_beta, kalman_beta_change, spread_acceleration
-Labels:       label_binary_5d, label_binary_10d, label_continuous_5d, label_continuous_10d
+Labels:       label_binary_5d, label_binary_10d, label_continuous_5d, label_continuous_10d,
+              label_kalman_5d, label_kalman_10d
 ```
 
 ### Step 5: Run models (see "Models" section below)
@@ -333,6 +334,7 @@ python3 -m src.models.pair_dataset_builder
 │   │   ├── arma_holdout_eval.py           # ARMA final holdout test
 │   │   ├── ou.py                          # OU baseline model
 │   │   └── ou_extended.py                 # OU + GARCH + regime-switching + VECM
+│   │   └── lstm.py                        # LSTM spread prediction + tuning
 │   └── backtest/
 │       └── backtest_engine.py             # Pluggable signal-based backtester
 ├── tests/
