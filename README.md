@@ -248,7 +248,7 @@ Hyperparameter grids per model:
 |--------|---------|----------|
 | **MSE** | mean((predicted - actual)^2) | Primary metric for all regression models |
 | **MAE** | mean(\|predicted - actual\|) | Secondary — less sensitive to outliers |
-| **RMSE** | sqrt(MSE) | Same unit as the spread change |
+| **RMSE** | sqrt(MSE) | Same unit as the spread change (Only used in the holdout set)|
 | **Directional accuracy** | % of times sign(predicted) == sign(actual) | Sanity check — should be above 50% |
 
 These are computed on validation data per fold, then averaged across all 4 folds.

@@ -8,3 +8,5 @@ seaborn
 statsmodels
 numba
 torch
+xgboost
+shap
