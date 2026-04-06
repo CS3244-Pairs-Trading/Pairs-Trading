@@ -215,12 +215,12 @@ python3 -m src.models.arma \
   --horizon 10 \
   --eval_split val
 
-# ARMA global tuning (12x12) - OLS
+# ARMA global tuning (8x8) - OLS
 python3 -m src.models.arma_tuning \
   --spread_col spread_ols \
   --horizon 10
 
-# ARMA global tuning (12x12) - Kalman
+# ARMA global tuning (8x8) - Kalman
 python3 -m src.models.arma_tuning \
   --spread_col spread_kalman \
   --horizon 10

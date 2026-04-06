@@ -16,8 +16,8 @@ from src.models.arma import (
     spread_variant_tag,
 )
 
-P_VALUES = list(range(1, 13))
-Q_VALUES = list(range(1, 13))
+P_VALUES = [0,1,2,4,6,8,9,10]
+Q_VALUES = [0,1,2,4,6,8,9,10]
 
 
 def _parse_int_list(raw: str | None, default_values: list[int]) -> list[int]:
