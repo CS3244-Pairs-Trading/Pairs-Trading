@@ -128,7 +128,8 @@ Spreads:      spread_ols, spread_kalman
 Features:     z_score, z_score_kalman, momentum_5d, momentum_10d,
               rolling_vol_20d, rolling_vol_60d, rolling_corr_60d,
               days_since_crossing, kalman_beta, kalman_beta_change, spread_acceleration
-Labels:       label_binary_5d, label_binary_10d, label_continuous_5d, label_continuous_10d
+Labels:       label_binary_5d, label_binary_10d, label_continuous_5d, label_continuous_10d,
+              label_kalman_5d, label_kalman_10d
 ```
 
 ### Step 5: Run models (see "Models" section below)
@@ -339,7 +340,7 @@ Hyperparameter grids per model:
 |--------|---------|----------|
 | **MSE** | mean((predicted - actual)^2) | Primary metric for all regression models |
 | **MAE** | mean(\|predicted - actual\|) | Secondary — less sensitive to outliers |
-| **RMSE** | sqrt(MSE) | Same unit as the spread change |
+| **RMSE** | sqrt(MSE) | Same unit as the spread change (Only used in the holdout set)|
 | **Directional accuracy** | % of times sign(predicted) == sign(actual) | Sanity check — should be above 50% |
 
 These are computed on validation data per fold, then averaged across all 4 folds.
@@ -425,6 +426,7 @@ python3 -m src.models.pair_dataset_builder
 │   │   ├── arma_holdout_eval.py           # ARMA final holdout test
 │   │   ├── ou.py                          # OU baseline model
 │   │   └── ou_extended.py                 # OU + GARCH + regime-switching + VECM
+│   │   └── lstm.py                        # LSTM spread prediction + tuning
 │   └── backtest/
 │       └── backtest_engine.py             # Pluggable signal-based backtester
 ├── tests/

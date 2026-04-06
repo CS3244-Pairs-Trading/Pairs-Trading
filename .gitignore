@@ -18,3 +18,8 @@ src/pairs_discovery/__cache__/
 .DS_Store
 **/.DS_Store
 .pair_cache.pkl
+data/processed/predictions/
+outputs/
+*.pkl
+*.pt
+*.pth
