@@ -119,7 +119,9 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
         _, eg_pval, _ = coint(p1, p2)
     except Exception:
         return {
-            "pair": f"{s1}-{s2}",
+            "pair": f"{s1}|{s2}",
+            "stock_a": s1,
+            "stock_b": s2,
             "cluster": cluster_id,
             "coint_pval": np.nan,
             "hurst": np.nan,
@@ -153,7 +155,9 @@ def evaluate_pair(s1, s2, cluster_id, p1: np.ndarray, p2: np.ndarray, cache: Pai
         is_eligible = False
  
     result = {
-        "pair": f"{s1}-{s2}",
+        "pair": f"{s1}|{s2}",
+        "stock_a": s1,
+        "stock_b": s2,
         "cluster": cluster_id,
         "mean_intercept": mean_intercept,
         "coint_pval": eg_pval,

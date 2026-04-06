@@ -7,6 +7,8 @@ from src.config import DEFAULT_CONFIG, ProjectConfig, all_training_windows
 
 REQUIRED_COLUMNS = {
     "pair",
+    "stock_a",
+    "stock_b",
     "training_window",
     "is_eligible",
     "score",
@@ -42,25 +44,31 @@ def load_discovered_pairs(path: Path) -> pd.DataFrame:
     return df
 
 
-def parse_pair_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Split pair symbols into stock_a and stock_b columns."""
-
+def parse_pair_columns(df: pd.DataFrame, pair_sep: str = "|") -> pd.DataFrame:
     out = df.copy()
-    split = out["pair"].astype(str).str.split("-", n=1, expand=True)
 
-    if split.shape[1] < 2:
-        raise ValueError("Column 'pair' is not parseable. Expected format like 'aapl-msft'.")
+    has_stock_cols = {"stock_a", "stock_b"}.issubset(out.columns)
 
-    out["stock_a"] = split[0].str.strip()
-    out["stock_b"] = split[1].str.strip()
+    if has_stock_cols:
+        out["stock_a"] = out["stock_a"].astype(str).str.strip()
+        out["stock_b"] = out["stock_b"].astype(str).str.strip()
+    else:
+        # Fallback just in case, but mostly redundant since the original dataset already has `stock_a` & `stock_b`
+        split = out["pair"].astype(str).str.split(pair_sep, n=1, expand=True)
+        if split.shape[1] < 2:
+            raise ValueError(
+                "Missing stock_a/stock_b and pair is not parseable with the safe separator."
+            )
+        out["stock_a"] = split[0].str.strip()
+        out["stock_b"] = split[1].str.strip()
 
-    invalid = (out["stock_a"] == "") | (out["stock_b"] == "") | out["stock_b"].isna()
+    invalid = (
+        out["stock_a"].isna() | out["stock_b"].isna() |
+        (out["stock_a"] == "") | (out["stock_b"] == "")
+    )
     if invalid.any():
         bad_examples = out.loc[invalid, "pair"].head(5).tolist()
-        raise ValueError(
-            "Found invalid 'pair' values. Expected format like 'aapl-msft'. "
-            f"Examples: {bad_examples}"
-        )
+        raise ValueError(f"Invalid stock_a/stock_b values. Examples: {bad_examples}")
 
     return out
 

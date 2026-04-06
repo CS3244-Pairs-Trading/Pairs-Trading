@@ -189,7 +189,7 @@ feature_cols = [
 | Model | Input | How it works | Owner |
 |-------|-------|-------------|-------|
 | **OU baseline** | Raw spread only | Fits Ornstein-Uhlenbeck parameters (kappa, theta, sigma) on a rolling lookback window. Produces z-scores from OU equilibrium — no features, no training. | David |
-| **ARMA** | Raw spread only | ARMA(p,q) on past spread values. Predicts next spread value; the difference from current value is the predicted change. No engineered features. | Priscilla |
+| **ARMA** | Raw spread only | ARMA via `ARIMA(order=(p,0,q))` on raw spread values. Predicts 10-day-ahead spread value first, then derives predicted change and predicted z-score at forecast origin. Supports both OLS and Kalman spread variants. | Priscilla |
 | **Linear regression** | 11 features | `predicted_change = w0 + w1*z_score + w2*momentum + ...` Simplest feature-based model. | Mabel |
 | **XGBoost** | 11 features | Gradient-boosted trees. Captures non-linear interactions (e.g. high z-score + low volatility = strong reversion signal). | Catherine |
 | **LSTM** | 20-day sequences of 11 features | Sees temporal patterns — how features evolved over the last 20 days. One sample = (20, 11) matrix → one prediction. | Kenneth/Priscilla |
@@ -200,16 +200,108 @@ feature_cols = [
 # OU baseline
 python3 -m src.models.ou_extended
 
-# ARMA (fixed params)
-python3 -m src.models.arma --input data/processed/pair_datasets/2010_2012/train_pair_dataset.csv
+# ARMA (fixed params, OLS variant)
+python3 -m src.models.arma \
+  --spread_col spread_ols \
+  --p 3 --q 2 \
+  --horizon 10 \
+  --eval_split val
 
-# ARMA (grid search tuning)
-python3 -m src.models.arma_tuning
+# ARMA (fixed params, Kalman variant)
+python3 -m src.models.arma \
+  --spread_col spread_kalman \
+  --p 3 --q 2 \
+  --horizon 10 \
+  --eval_split val
+
+# ARMA global tuning (12x12) - OLS
+python3 -m src.models.arma_tuning \
+  --spread_col spread_ols \
+  --horizon 10
+
+# ARMA global tuning (12x12) - Kalman
+python3 -m src.models.arma_tuning \
+  --spread_col spread_kalman \
+  --horizon 10
+
+# ARMA holdout evaluation using selected global params - OLS
+python3 -m src.models.arma_holdout_eval \
+  --spread_col spread_ols \
+  --horizon 10 \
+  --save_forecasts
+
+# ARMA holdout evaluation using selected global params - Kalman
+python3 -m src.models.arma_holdout_eval \
+  --spread_col spread_kalman \
+  --horizon 10 \
+  --save_forecasts
 
 # Linear regression, XGBoost, LSTM
 python3 -m src.models.linear_regression
 python3 -m src.models.xgboost_model
 python3 -m src.models.lstm
+```
+
+### ARMA pipeline (current behavior)
+
+- ARMA is fit per pair.
+- Two variants are supported:
+  - `spread_ols`
+  - `spread_kalman`
+- Forecast horizon is 10 trading days by default.
+- ARMA predicts future spread value first (`predicted_value`), then derives:
+  - `predicted_change = predicted_value - current_spread`
+  - `predicted_z = predicted_change / rolling_vol_20d_at_origin`
+- ARMA files do not generate trading signals and do not run backtesting metrics.
+- Layer-1 metrics in ARMA files are `mse` and `mae` on predicted change.
+
+### ARMA outputs (where files go)
+
+**Fixed-parameter ARMA runs**
+
+```
+data/processed/predictions/
+├── arma_ols/
+│   └── <window_label>/
+│       ├── all_forecasts.csv
+│       ├── all_forecasts_val.csv / all_forecasts_test.csv
+│       ├── summary_metrics.csv
+│       ├── summary_metrics_val.csv / summary_metrics_test.csv
+│       └── pairs/<pair>/arma_forecasts_<split>.csv
+└── arma_kalman/
+    └── <window_label>/...
+```
+
+Per-pair ARMA forecast CSVs include:
+`forecast_origin_date, target_date, pair, spread_col, predicted_change, predicted_value, predicted_z, actual_change, actual_value`
+
+**ARMA tuning outputs**
+
+```
+data/processed/arma_tuning_outputs/
+├── arma_ols/
+│   ├── all_validation_results.csv
+│   ├── global_param_ranking.csv
+│   └── selected_global_params.csv
+└── arma_kalman/
+    ├── all_validation_results.csv
+    ├── global_param_ranking.csv
+    └── selected_global_params.csv
+```
+
+Tuning is global per spread type (not per pair): one selected `(p,q)` for OLS and one selected `(p,q)` for Kalman.
+
+**ARMA holdout outputs**
+
+```
+data/processed/arma_holdout_outputs/
+├── arma_ols/
+│   ├── final_holdout_results.csv
+│   ├── holdout_summary.csv
+│   ├── selected_global_params_used.csv
+│   └── <window_label>/pairs/<pair>/arma_forecasts_test.csv   # if --save_forecasts
+└── arma_kalman/
+    └── ...
 ```
 
 ### Hyperparameter tuning process
@@ -232,7 +324,7 @@ Hyperparameter grids per model:
 
 | Model | Hyperparameters to tune |
 |-------|------------------------|
-| ARMA | p: [1,2,3,4,5], q: [1,2,3,4,5] |
+| ARMA | p: [1..12], q: [1..12] (12x12 global grid search, selected by validation MSE then MAE) |
 | Linear regression | None (no hyperparameters) |
 | XGBoost | max_depth: [3,4,5], n_estimators: [100,200], learning_rate: [0.01,0.05,0.1] |
 | LSTM | hidden_size: [32,64], window_size: [10,20], learning_rate: [0.001,0.01] |
