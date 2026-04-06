@@ -424,9 +424,12 @@ python3 -m src.models.pair_dataset_builder
 │   │   ├── arma.py                        # ARMA spread forecasting
 │   │   ├── arma_tuning.py                 # ARMA hyperparameter grid search
 │   │   ├── arma_holdout_eval.py           # ARMA final holdout test
+│   │   ├── linear_regression.py           # Linear Regression baseline model
+│   │   ├── lstm.py                        # LSTM spread prediction + tuning
 │   │   ├── ou.py                          # OU baseline model
-│   │   └── ou_extended.py                 # OU + GARCH + regime-switching + VECM
-│   │   └── lstm.py                        # LSTM spread prediction + tuning
+│   │   ├── ou_extended.py                 # OU + GARCH + regime-switching + VECM
+│   │   ├── xgboost_model.py               # XGBoost model
+│   │   └── xgboost_spread_model.py        # XGBoost model for spread forecasting
 │   └── backtest/
 │       └── backtest_engine.py             # Pluggable signal-based backtester
 ├── tests/
