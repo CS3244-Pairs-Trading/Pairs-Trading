@@ -282,8 +282,6 @@ def run_pair_discovery(config: ProjectConfig = DEFAULT_CONFIG, cluster_source: s
 if __name__ == "__main__":
     run_pair_discovery(DEFAULT_CONFIG)
 
-
-
 # ## Test Script
 # def generate_test_data(n_days=500):
 #     np.random.seed(42)
