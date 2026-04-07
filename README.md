@@ -33,7 +33,7 @@ Raw stock data
   → pairs_discovery.py .......... PCA, clustering, cointegration, rank pairs
   → pairs_selection.py .......... select top K pairs per window
   → pair_dataset_builder.py ..... build train/val CSVs with features + labels
-  → models (ARMA, lin reg, XGB, LSTM) .. predict spread change
+  → models (ARMA, lin reg, XGB, LSTM, LSTM encoder-decoder) .. predict spread change
   → trading strategy ............ convert predictions to signals
   → backtest_engine.py .......... simulate trades, compute Sharpe/drawdown
 ```
@@ -164,10 +164,10 @@ Every model must save predictions in this format so the trading strategy layer c
 ```
 data/processed/predictions/<model_name>/<window_label>/predictions.csv
 
-Columns: Date, pair, predicted_spread_change
+Columns: Date, pair, predicted_change, predicted_value, predicted_z
 ```
 
-### Feature columns (input to lin reg, XGBoost, LSTM)
+### Feature columns (input to lin reg, XGBoost, LSTM, LSTM encoder-decoder)
 
 ```python
 feature_cols = [
@@ -194,6 +194,7 @@ feature_cols = [
 | **Linear regression** | 11 features | `predicted_change = w0 + w1*z_score + w2*momentum + ...` Simplest feature-based model. | Mabel |
 | **XGBoost** | 11 features | Gradient-boosted trees. Captures non-linear interactions (e.g. high z-score + low volatility = strong reversion signal). | Catherine |
 | **LSTM** | 20-day sequences of 11 features | Sees temporal patterns — how features evolved over the last 20 days. One sample = (20, 11) matrix → one prediction. | Kenneth/Priscilla |
+| **LSTM encoder-decoder** | 10/20-day input sequences of 11 features | Seq2seq model: encoder reads feature history, decoder predicts next H daily spread deltas autoregressively (teacher forcing in training). Final output is cumulative H-step change for comparability. | Kenneth/Priscilla |
 
 ### Running each model
 
@@ -237,10 +238,11 @@ python3 -m src.models.arma_holdout_eval \
   --horizon 10 \
   --save_forecasts
 
-# Linear regression, XGBoost, LSTM
+# Linear regression, XGBoost, LSTM, LSTM encoder-decoder
 python3 -m src.models.linear_regression
 python3 -m src.models.xgboost_model
 python3 -m src.models.lstm
+python3 -m src.models.lstm_encoder_decoder
 ```
 
 ### ARMA pipeline (current behavior)
@@ -329,6 +331,7 @@ Hyperparameter grids per model:
 | Linear regression | None (no hyperparameters) |
 | XGBoost | max_depth: [3,4,5], n_estimators: [100,200], learning_rate: [0.01,0.05,0.1] |
 | LSTM | hidden_size: [32,64], window_size: [10,20], learning_rate: [0.001,0.01] |
+| LSTM encoder-decoder | hidden_size: [32,64], window_size: [10,20], learning_rate: [0.001,0.0005], horizon (default 10), teacher_forcing (default 0.5) |
 
 ---
 
@@ -367,6 +370,7 @@ These are computed on validation data per fold, then averaged across all 4 folds
 | Lin Reg  | ...         | ...         | ...            | ...           |
 | XGBoost  | ...         | ...         | ...            | ...           |
 | LSTM     | ...         | ...         | ...            | ...           |
+| LSTM Enc-Dec | ...      | ...         | ...            | ...           |
 ```
 
 Each row uses the best-tuned version of that model (best hyperparameters selected via 4-fold validation average). All evaluated on the same validation pairs and dates.
@@ -426,6 +430,7 @@ python3 -m src.models.pair_dataset_builder
 │   │   ├── arma_holdout_eval.py           # ARMA final holdout test
 │   │   ├── linear_regression.py           # Linear Regression baseline model
 │   │   ├── lstm.py                        # LSTM spread prediction + tuning
+│   │   ├── lstm_encoder_decoder.py        # LSTM seq2seq encoder-decoder baseline
 │   │   ├── ou.py                          # OU baseline model
 │   │   ├── ou_extended.py                 # OU + GARCH + regime-switching + VECM
 │   │   ├── xgboost_model.py               # XGBoost model
