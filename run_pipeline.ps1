@@ -122,15 +122,15 @@ if ($SkipModelTraining) {
     switch ($model) {
         "ou"      { & $py -m src.models.ou }
         "arma"    { 
-            & $py -m src.models.arma --spread_col spread_ols --p 3 --q 2 --horizon $horizon --eval_split val
-            & $py -m src.models.arma --spread_col spread_kalman --p 3 --q 2 --horizon $horizon --eval_split val
+            & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon --eval_split val
+            & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon --eval_split val
         }
         "linear"  { & $py -m src.models.linear_regression }
         "xgboost" { & $py -m src.models.xgboost_model }
         "lstm"    { & $py -m src.models.lstm }
         "all"     {
             & $py -m src.models.ou
-            & $py -m src.models.arma --spread_col spread_ols --p 3 --q 2 --horizon $horizon --eval_split val
+            & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon --eval_split val
             & $py -m src.models.linear_regression
             & $py -m src.models.xgboost_model
             & $py -m src.models.lstm
