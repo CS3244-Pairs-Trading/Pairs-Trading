@@ -1,6 +1,7 @@
 """
-Target (label_continuous_10d):
-    predicted_spread_change = spread(t + 10) - spread(t)
+Two spread types are run (mirroring the LSTM pipeline):
+    OLS: target = label_continuous_10d = spread_ols(t+10) - spread_ols(t)
+    Kalman: target = label_kalman_10d = spread_kalman(t+10) - spread_kalman(t)
     negative means the spread is expected to contract (mean-revert).
     positive means the spread is expected to widen.
 
@@ -17,32 +18,33 @@ Features (11 columns, pre-computed by pair_dataset_builder.py):
     10. kalman_beta_change: 5-day change in Kalman beta
     11. spread_acceleration: second derivative of spread
 
-Evaluation metrics :
-    1. MSE 
-    2. MAE  
+Evaluation metrics:
+    1. MSE
+    2. MAE
     3. Directional accuracy (% of times sign(predicted) == sign(actual))
     4. Holdout: RMSE (same unit as spread change)
 
 Input:
     data/processed/pair_datasets/<window>/
         train_pair_dataset.csv (required)
-        val_pair_dataset.csv (optional (folds 1-4))
-        test_pair_dataset.csv (optional (holdout only))
+        val_pair_dataset.csv (optional, folds 1-4)
+        test_pair_dataset.csv (optional, holdout only)
 
-Output:
-    data/processed/predictions/linear_regression/<window>/
-        predictions.csv  0--> Date, pair, predicted_spread_change
+Output (saved separately for OLS and Kalman):
+    data/processed/predictions/linear_regression_ols/<window>/predictions.csv
+    data/processed/predictions/linear_regression_kalman/<window>/predictions.csv
+        Columns: Date, pair, predicted_spread_change, predicted_value, predicted_z
 
-    data/processed/linear_regression_outputs/<window>/pairs/<pair>/
-        lr_forecasts_val.csv --> Date, pair, actual, predicted_spread_change, ... (for backtesting)
+    data/processed/linear_regression_outputs/<spread_type>/<window>/pairs/<pair>/
+        lr_forecasts_val.csv --> Date, pair, actual, predicted_spread_change, ...
         lr_forecasts_test.csv --> same
         lr_metrics_val.csv --> mse, mae, rmse, directional_accuracy, n_train, n_eval
         lr_metrics_test.csv --> same
 
-    data/processed/linear_regression_outputs/
+    data/processed/linear_regression_outputs/<spread_type>/
         all_val_results.csv --> aggregated val metrics across all windows and pairs
         all_test_results.csv --> aggregated test metrics across all windows and pairs
-        fold_summary.csv --> average MSE/MAE per fold (for tuning comparison)
+        fold_summary.csv --> average MSE/MAE per fold (for tuning comparison table)
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from src.config import DEFAULT_CONFIG
 
-# features pre-computed by pair_dataset_builder.py 
+# features pre-computed by pair_dataset_builder.py
 FEATURE_COLS = [
     "z_score",
     "z_score_kalman",
@@ -70,22 +72,30 @@ FEATURE_COLS = [
     "spread_acceleration",
 ]
 
-# target column: spread change over next 10 trading days
-TARGET_COL = "label_continuous_10d"
+# spread configurations — (target_col, spread_col, output_model_name)
+# mirrors the LSTM pipeline which also runs ols and kalman separately
+SPREAD_CONFIGS = [
+    ("label_continuous_10d", "spread_ols",    "linear_regression_ols"),
+    ("label_kalman_10d",     "spread_kalman", "linear_regression_kalman"),
+]
+
 MIN_TRAIN_PTS = 50
 MIN_EVAL_PTS  = 10
 
 
 # HELPER FUNCTIONS
+
 def _safe_pair_name(pair: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", pair.strip())
     return safe.strip("._") or "pair"
+
 
 def load_pair_dataset(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
     df = pd.read_csv(path, parse_dates = ["Date"])
     return df.dropna(subset = ["Date"]).sort_values(["pair", "Date"]).reset_index(drop = True)
+
 
 def directional_accuracy(actual: np.ndarray, predicted: np.ndarray) -> float:
     """Percentage of predictions where sign(predicted) == sign(actual).
@@ -96,30 +106,35 @@ def directional_accuracy(actual: np.ndarray, predicted: np.ndarray) -> float:
         return float("nan")
     return float((np.sign(actual[mask]) == np.sign(predicted[mask])).mean())
 
+
 def compute_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     mse  = float(mean_squared_error(actual, predicted))
     mae  = float(mean_absolute_error(actual, predicted))
     rmse = float(np.sqrt(mse))
     da   = directional_accuracy(actual, predicted)
     return {
-        "mse": round(mse, 6),
-        "mae": round(mae, 6),
-        "rmse": round(rmse, 6),
-        "directional_accuracy": round(da, 4) if not np.isnan(da) else None,
+        "mse":                  round(mse,  6),
+        "mae":                  round(mae,  6),
+        "rmse":                 round(rmse, 6),
+        "directional_accuracy": round(da,   4) if not np.isnan(da) else None,
     }
 
 
-# LINEAR REGRESSION MODEL
+# THE MODEL
+
 def run_lr_for_pair(
     train_df: pd.DataFrame,
     eval_df: pd.DataFrame,
     pair: str,
     eval_split: str,
     window_label: str,
+    target_col: str,
+    spread_col: str,
 ) -> tuple[pd.DataFrame, dict] | None:
     """
     Fit a linear regression model on the 11 engineered features and predict
-    label_continuous_10d (spread change over next 10 days) on the eval split.
+    the spread change over the next 10 days on the eval split.
+    Supports both OLS (label_continuous_10d) and Kalman (label_kalman_10d) targets.
     Returns (forecast_df, metrics) or None if the pair is skipped.
     """
 
@@ -139,28 +154,28 @@ def run_lr_for_pair(
         missing = set(FEATURE_COLS) - set(available_features)
         print(f"[{window_label}:{pair}] Missing features (will proceed without): {sorted(missing)}")
 
-    if TARGET_COL not in train.columns:
-        print(f"[{window_label}:{pair}] Target column '{TARGET_COL}' not found.")
+    if target_col not in train.columns:
+        print(f"[{window_label}:{pair}] Target column '{target_col}' not found.")
         return None
 
-    # drop rows where any feature or target is NaN
-    # also include spread_ols for predicted_value and predicted_z
-    extra_cols  = [c for c in ["spread_ols"] if c in eval_.columns]
-    train_clean = train[available_features + [TARGET_COL, "Date"]].dropna()
-    eval_clean  = eval_[available_features + [TARGET_COL, "Date"] + extra_cols].dropna()
+    # spread_col is included separately to compute predicted_value and predicted_z
+    # rolling_vol_20d is already in FEATURE_COLS so it comes in through available_features
+    extra_cols = [c for c in [spread_col] if c in eval_.columns and c not in available_features]
+    train_clean = train[available_features + [target_col, "Date"]].dropna()
+    eval_clean = eval_[available_features + [target_col, "Date"] + extra_cols].dropna()
 
     if len(train_clean) < MIN_TRAIN_PTS or len(eval_clean) < MIN_EVAL_PTS:
         return None
 
     X_train = train_clean[available_features].values
-    y_train = train_clean[TARGET_COL].values
-    X_eval  = eval_clean[available_features].values
-    y_eval  = eval_clean[TARGET_COL].values
+    y_train = train_clean[target_col].values
+    X_eval = eval_clean[available_features].values
+    y_eval = eval_clean[target_col].values
 
-    # standardise, fit only on train to avoid lookahead bias
-    scaler    = StandardScaler()
+    # standardise — fit only on train to avoid lookahead bias
+    scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
-    X_eval_s  = scaler.transform(X_eval)
+    X_eval_s = scaler.transform(X_eval)
 
     model = LinearRegression()
     model.fit(X_train_s, y_train)
@@ -174,12 +189,13 @@ def run_lr_for_pair(
         "n_train": len(train_clean),
         "n_eval": len(eval_clean),
         "n_features": len(available_features),
-        "target_col": TARGET_COL,
+        "target_col": target_col,
+        "spread_col": spread_col,
     })
 
-    # predicted_value = current spread + predicted change 
-    # predicted_z = predicted change / rolling vol 
-    current_spread = eval_clean["spread_ols"].values if "spread_ols" in eval_clean.columns else np.full(len(y_pred), np.nan)
+    # predicted_value = current spread + predicted change
+    # predicted_z = predicted change / rolling_vol_20d (normalised signal for backtester)
+    current_spread = eval_clean[spread_col].values if spread_col in eval_clean.columns else np.full(len(y_pred), np.nan)
     current_vol = eval_clean["rolling_vol_20d"].values if "rolling_vol_20d" in eval_clean.columns else np.ones(len(y_pred))
     current_vol = np.where(current_vol < 1e-8, 1e-8, current_vol)  # avoid division by zero
 
@@ -198,7 +214,8 @@ def run_lr_for_pair(
     return forecast_df, metrics
 
 
-# FUNCTIONS FOR SAVING
+# FUNCTIONS FOR SAVING OUTPUTS
+
 def save_pair_outputs(
     output_root: Path,
     window_label: str,
@@ -212,6 +229,7 @@ def save_pair_outputs(
     forecast_df.to_csv(pair_dir / f"lr_forecasts_{eval_split}.csv", index = False)
     pd.DataFrame([metrics]).to_csv(pair_dir / f"lr_metrics_{eval_split}.csv", index = False)
 
+
 def save_predictions_for_backtest(
     forecast_df: pd.DataFrame,
     predictions_root: Path,
@@ -224,16 +242,17 @@ def save_predictions_for_backtest(
     pred_dir.mkdir(parents = True, exist_ok = True)
 
     cols = ["Date", "pair", "predicted_spread_change", "predicted_value", "predicted_z"]
-    out = forecast_df[[c for c in cols if c in forecast_df.columns]].copy()
+    out  = forecast_df[[c for c in cols if c in forecast_df.columns]].copy()
     pred_path = pred_dir / "predictions.csv"
 
-    # append if file already exists 
+    # append if file already exists (multiple pairs written sequentially)
     if pred_path.exists():
         existing = pd.read_csv(pred_path, parse_dates = ["Date"])
         out = pd.concat([existing, out], ignore_index = True).drop_duplicates(
             subset = ["Date", "pair"]).sort_values(["pair", "Date"])
 
     out.to_csv(pred_path, index = False)
+
 
 def save_window_outputs(
     output_root: Path,
@@ -253,11 +272,14 @@ def save_window_outputs(
             window_dir / f"summary_metrics_{split}.csv", index = False)
 
 
-# WINDOW RUNNER
+# TO RUN
+
 def run_window(
     window_dir: Path,
     output_root: Path,
     predictions_root: Path,
+    target_col: str,
+    spread_col: str,
     target_pair: str | None = None,
     eval_split_arg: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
@@ -265,14 +287,14 @@ def run_window(
 
     window_label = window_dir.name
     train_df = load_pair_dataset(window_dir / "train_pair_dataset.csv")
-    val_df   = load_pair_dataset(window_dir / "val_pair_dataset.csv")
-    test_df  = load_pair_dataset(window_dir / "test_pair_dataset.csv")
+    val_df = load_pair_dataset(window_dir / "val_pair_dataset.csv")
+    test_df = load_pair_dataset(window_dir / "test_pair_dataset.csv")
 
     if train_df is None:
         print(f"[{window_label}] train_pair_dataset.csv not found, skip.")
         return [], []
 
-    # decide which splits to evaluate 
+    # decide which splits to evaluate
     eval_datasets: list[tuple[str, pd.DataFrame]] = []
     if eval_split_arg in ("val", "auto", "both") and val_df is not None:
         eval_datasets.append(("val", val_df))
@@ -285,15 +307,15 @@ def run_window(
         print(f"[{window_label}] No eval splits available.")
         return [], []
 
-    all_val_metrics:  list[dict] = []
+    all_val_metrics: list[dict] = []
     all_test_metrics: list[dict] = []
     window_forecasts: list[pd.DataFrame] = []
-    window_metrics:   list[dict] = []
+    window_metrics: list[dict] = []
     modeled = skipped = 0
 
     for eval_name, eval_df in eval_datasets:
         train_pairs = set(train_df["pair"].dropna().astype(str).unique())
-        eval_pairs  = set(eval_df["pair"].dropna().astype(str).unique())
+        eval_pairs = set(eval_df["pair"].dropna().astype(str).unique())
         pairs = sorted(train_pairs & eval_pairs)
 
         if target_pair is not None:
@@ -301,7 +323,7 @@ def run_window(
 
         print(f"Window: {window_label} | Split: {eval_name} | Pairs: {len(pairs)}")
 
-        for idx, pair in enumerate(pairs, start=1):
+        for idx, pair in enumerate(pairs, start = 1):
             print(f"[{idx}/{len(pairs)}] {pair}")
             try:
                 result = run_lr_for_pair(
@@ -310,6 +332,8 @@ def run_window(
                     pair = pair,
                     eval_split = eval_name,
                     window_label = window_label,
+                    target_col = target_col,
+                    spread_col = spread_col,
                 )
             except Exception as exc:
                 print(f"[{window_label}:{eval_name}:{pair}] Failed: {exc}")
@@ -322,8 +346,6 @@ def run_window(
 
             forecast_df, metrics = result
             save_pair_outputs(output_root, window_label, pair, eval_name, forecast_df, metrics)
-
-            # save to predictions/ folder for backtest_engine.py
             save_predictions_for_backtest(forecast_df, predictions_root, window_label)
 
             window_forecasts.append(forecast_df)
@@ -343,24 +365,21 @@ def run_window(
             ["eval_split", "mse", "pair"]).reset_index(drop = True)
         save_window_outputs(output_root, window_label, forecasts_df, metrics_df)
 
-    print(f"  Modeled: {modeled} | Skipped: {skipped}")
+    print(f"Modeled: {modeled} | Skipped: {skipped}")
     return all_val_metrics, all_test_metrics
 
 
 # MAIN FUNCTION
-# to run on a single window or pair, set these — otherwise leave as None to run all
-TARGET_WINDOW = None   # e.g. "2010_2012"
-TARGET_PAIR = None   # e.g. "gsk-wec"
+
+# to run on a single window or pair, set these otherwise leave as None to run all
+TARGET_WINDOW = None # e.g. "2010_2012"
+TARGET_PAIR = None # e.g. "gsk-wec"
 EVAL_SPLIT = "auto" # "auto", "val", "test", or "both"
-                    # set to "test" when running the holdout window
+                       # set to "test" when running the holdout window
 
 def main() -> None:
     input_root = DEFAULT_CONFIG.processed_dir / "pair_datasets"
-    output_root = DEFAULT_CONFIG.processed_dir / "linear_regression_outputs"
-    predictions_root = DEFAULT_CONFIG.processed_dir / "predictions" / "linear_regression"
-
-    output_root.mkdir(parents = True, exist_ok = True)
-    predictions_root.mkdir(parents = True, exist_ok = True)
+    lr_root    = DEFAULT_CONFIG.processed_dir / "linear_regression_outputs"
 
     if not input_root.exists():
         raise FileNotFoundError(f"Input root not found: {input_root}")
@@ -371,54 +390,61 @@ def main() -> None:
         if not window_dirs:
             raise ValueError(f"Window '{TARGET_WINDOW}' not found under {input_root}")
 
-    all_val_results: list[dict] = []
-    all_test_results: list[dict] = []
+    for target_col, spread_col, model_name in SPREAD_CONFIGS:
+        print(f"\n{'='*60}")
+        print(f"Linear Regression — {model_name}")
+        print(f"Target: {target_col} | Spread: {spread_col}")
+        print(f"{'='*60}")
 
-    for window_dir in window_dirs:
-        print(f"\nWindow {window_dir.name.replace('_', '-')}")
-        val_rows, test_rows = run_window(
-            window_dir = window_dir,
-            output_root = output_root,
-            predictions_root = predictions_root,
-            target_pair = TARGET_PAIR,
-            eval_split_arg = EVAL_SPLIT,
-        )
-        all_val_results.extend(val_rows)
-        all_test_results.extend(test_rows)
+        output_root = lr_root / model_name
+        predictions_root = DEFAULT_CONFIG.processed_dir / "predictions" / model_name
+        output_root.mkdir(parents = True, exist_ok = True)
+        predictions_root.mkdir(parents = True, exist_ok = True)
 
-    # save aggregated results
-    if all_val_results:
-        val_agg = pd.DataFrame(all_val_results).sort_values("mse")
-        val_agg.to_csv(output_root / "all_val_results.csv", index = False)
-        print(f"\nSaved: {output_root / 'all_val_results.csv'}")
+        all_val_results: list[dict] = []
+        all_test_results: list[dict] = []
 
-    if all_test_results:
-        test_agg = pd.DataFrame(all_test_results).sort_values("mse")
-        test_agg.to_csv(output_root / "all_test_results.csv", index = False)
-        print(f"Saved: {output_root / 'all_test_results.csv'}")
+        for window_dir in window_dirs:
+            print(f"\nWindow {window_dir.name.replace('_', '-')}")
+            val_rows, test_rows = run_window(
+                window_dir = window_dir,
+                output_root = output_root,
+                predictions_root = predictions_root,
+                target_col = target_col,
+                spread_col = spread_col,
+                target_pair = TARGET_PAIR,
+                eval_split_arg = EVAL_SPLIT,
+            )
+            all_val_results.extend(val_rows)
+            all_test_results.extend(test_rows)
 
-    # fold summary: average val MSE/MAE per window (used for tuning comparison table)
-    if all_val_results:
-        fold_summary = (
-            pd.DataFrame(all_val_results)
-            .groupby("window_label")[["mse", "mae", "rmse", "directional_accuracy"]]
-            .mean()
-            .round(6)
-            .reset_index()
-        )
-        fold_summary.to_csv(output_root / "fold_summary.csv", index = False)
-        print(f"Saved: {output_root / 'fold_summary.csv'}")
-        print("\nFold summary (avg val metrics per window):")
-        print(fold_summary.to_string(index = False))
+        # save aggregated results
+        if all_val_results:
+            pd.DataFrame(all_val_results).sort_values("mse").to_csv(
+                output_root / "all_val_results.csv", index = False)
+            print(f"\nSaved: {output_root / 'all_val_results.csv'}")
 
-    print("\nLinear Regression Complete")
-    print(f"Input root: {input_root}")
-    print(f"Output root: {output_root}")
-    print(f"Predictions root: {predictions_root}")
-    print(f"Target: {TARGET_COL}")
-    print(f"Features: {len(FEATURE_COLS)}")
-    print(f"Val pairs: {len(all_val_results)}")
-    print(f"Test pairs: {len(all_test_results)}")
+        if all_test_results:
+            pd.DataFrame(all_test_results).sort_values("mse").to_csv(
+                output_root / "all_test_results.csv", index = False)
+            print(f"Saved: {output_root / 'all_test_results.csv'}")
+
+        # fold summary: average val metrics per window (for tuning comparison table)
+        if all_val_results:
+            fold_summary = (
+                pd.DataFrame(all_val_results)
+                .groupby("window_label")[["mse", "mae", "rmse", "directional_accuracy"]]
+                .mean()
+                .round(6)
+                .reset_index()
+            )
+            fold_summary.to_csv(output_root / "fold_summary.csv", index = False)
+            print(f"Saved: {output_root / 'fold_summary.csv'}")
+            print(f"\nFold summary — {model_name}:")
+            print(fold_summary.to_string(index = False))
+
+        print(f"\n{model_name} complete")
+        print(f"Val pairs: {len(all_val_results)} | Test pairs: {len(all_test_results)}")
 
 
 if __name__ == "__main__":
