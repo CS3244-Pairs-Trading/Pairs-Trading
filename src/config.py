@@ -33,6 +33,26 @@ class BacktestParamsConfig:
     margin_multiplier: float = 20.0
     output_dir: str = "outputs/backtest"
 
+    # Quantile z-score signal defaults
+    entry_quantile:    float = 0.05   # enter long at this pct, short at (1 - pct)
+    exit_quantile:     float = 0.40   # exit when z crosses back to this pct
+    stop_quantile:     float = 0.01   # stop-loss at this pct (0 = disabled)
+    quantile_min_obs:  int   = 30     # min training z-scores before quantile fit
+    entry_exit_gap:    float = 0.1    # min gap between entry_z and exit_z (sanity)
+    entry_stop_gap:    float = 0.5    # min gap between stop_z and entry_z (sanity)
+
+    # Quantile signal fallback z-thresholds (used when < quantile_min_obs)
+    quantile_fallback_entry_z: float = 2.0
+    quantile_fallback_exit_z:  float = 0.5
+    quantile_fallback_stop_z:  float = 4.0
+
+    # Quantile sweep defaults
+    sweep_entry_qs: tuple[float, ...] = (0.03, 0.05, 0.07, 0.10)
+    sweep_exit_qs:  tuple[float, ...] = (0.30, 0.40, 0.50)
+    sweep_stop_qs:  tuple[float, ...] = (0.01,)
+    sweep_top_n:    int = 5           # top-N quantile configs in comparison table
+    sweep_output_dir: str = "outputs/quantile_sweep"
+
 DEFAULT_BACKTEST_PARAMS = BacktestParamsConfig()
 
 

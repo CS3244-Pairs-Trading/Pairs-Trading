@@ -97,28 +97,37 @@ def spread_variant_tag(spread_col: str) -> str:
 
 
 def resolve_volatility_column(df: pd.DataFrame, spread_col: str) -> str:
-    """Resolve per-spread volatility column used to derive predicted z-score."""
+    """
+    Resolve the volatility column used to derive predicted z-scores.
+
+    For Kalman spreads, prefer a Kalman-specific 20d volatility column when it
+    exists. If none is available, fall back to the generic rolling_vol_20d so
+    ARMA can still run and tune on spread_kalman. The volatility column is only
+    used to derive predicted_z; it is not used in the ARMA fit itself.
+    """
+
+    generic_vol = "rolling_vol_20d"
 
     if spread_col == "spread_ols":
-        vol_col = "rolling_vol_20d"
-        if vol_col not in df.columns:
+        if generic_vol not in df.columns:
             raise ValueError(
                 "spread_ols requires volatility column 'rolling_vol_20d', "
                 f"but it was not found. Available columns: {list(df.columns)[:30]}"
             )
-        return vol_col
+        return generic_vol
 
     if spread_col == "spread_kalman":
         preferred = "rolling_vol_20d_kalman"
         if preferred in df.columns:
             return preferred
 
-        kalman_vol_candidates = [
-            c
-            for c in df.columns
-            if "rolling_vol" in c.lower() and "kalman" in c.lower()
-        ]
-        kalman_vol_candidates = sorted(set(kalman_vol_candidates))
+        kalman_vol_candidates = sorted(
+            {
+                c
+                for c in df.columns
+                if "rolling_vol" in c.lower() and "kalman" in c.lower()
+            }
+        )
         if len(kalman_vol_candidates) == 1:
             return kalman_vol_candidates[0]
         if len(kalman_vol_candidates) > 1:
@@ -127,11 +136,19 @@ def resolve_volatility_column(df: pd.DataFrame, spread_col: str) -> str:
                 f"Candidates: {kalman_vol_candidates}. Please keep one canonical column."
             )
 
+        if generic_vol in df.columns:
+            warnings.warn(
+                "No Kalman-specific volatility column found for spread_kalman; "
+                "falling back to generic 'rolling_vol_20d' to derive predicted_z.",
+                stacklevel=2,
+            )
+            return generic_vol
+
         vol_like_cols = [c for c in df.columns if "vol" in c.lower()]
         raise ValueError(
-            "spread_kalman requires a Kalman 20d volatility column (expected "
-            "'rolling_vol_20d_kalman' or another column containing both 'rolling_vol' "
-            f"and 'kalman'). None found. Vol-like columns: {vol_like_cols}"
+            "spread_kalman requires a volatility column for predicted_z. Looked for "
+            "'rolling_vol_20d_kalman', any column containing both 'rolling_vol' and "
+            f"'kalman', and finally fallback 'rolling_vol_20d'. None found. Vol-like columns: {vol_like_cols}"
         )
 
     raise ValueError(
@@ -416,6 +433,43 @@ def save_pair_outputs(
     (pair_dir / f"arma_model_summary_{eval_split}.txt").write_text(fitted_model_summary)
 
 
+def build_shared_predictions_export(forecast_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build the normalized cross-model predictions export from ARMA detailed forecasts.
+
+    ARMA keeps richer detailed outputs; this export is the shared backtest interface.
+    """
+
+    required = {
+        "forecast_origin_date",
+        "pair",
+        "predicted_change",
+        "predicted_value",
+        "predicted_z",
+    }
+    missing = required - set(forecast_df.columns)
+    if missing:
+        raise ValueError(f"Cannot build shared predictions export; missing columns: {sorted(missing)}")
+
+    shared = forecast_df.rename(columns={"forecast_origin_date": "Date"})[
+        ["Date", "pair", "predicted_change", "predicted_value", "predicted_z"]
+    ].copy()
+    return shared
+
+
+def save_shared_predictions_export(
+    forecast_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Save normalized predictions CSV sorted by pair/date with (Date, pair) dedup only."""
+
+    shared = build_shared_predictions_export(forecast_df)
+    shared = shared.sort_values(["pair", "Date"]).drop_duplicates(
+        subset=["Date", "pair"], keep="first"
+    )
+    shared.to_csv(output_path, index=False)
+
+
 def save_window_outputs(
     output_root: Path,
     window_label: str,
@@ -434,12 +488,23 @@ def save_window_outputs(
 
     all_forecasts.to_csv(window_dir / "all_forecasts.csv", index=False)
     metrics_df.to_csv(window_dir / "summary_metrics.csv", index=False)
+    save_shared_predictions_export(
+        forecast_df=all_forecasts,
+        output_path=window_dir / "predictions.csv",
+    )
 
-    for split in sorted(metrics_df["eval_split"].astype(str).unique()):
+    split_labels = sorted(metrics_df["eval_split"].astype(str).unique())
+    for split in split_labels:
         split_forecasts = all_forecasts[all_forecasts["eval_split"] == split]
         split_metrics = metrics_df[metrics_df["eval_split"] == split]
         split_forecasts.to_csv(window_dir / f"all_forecasts_{split}.csv", index=False)
         split_metrics.to_csv(window_dir / f"summary_metrics_{split}.csv", index=False)
+
+        if len(split_labels) > 1:
+            save_shared_predictions_export(
+                forecast_df=split_forecasts,
+                output_path=window_dir / f"predictions_{split}.csv",
+            )
 
 
 def _resolve_eval_datasets(
