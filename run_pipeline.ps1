@@ -24,6 +24,7 @@ param (
     [switch]$SkipPairSelection,
     [switch]$SkipDatasetBuilding,
     [switch]$SkipModelTraining,
+    [switch]$SkipBestParamRuns,
     [switch]$SkipBacktesting,
 
     [Alias("h", "help")]
@@ -31,21 +32,22 @@ param (
 )
 
 # Valid Models List
-$validModels = @("ou", "arma", "linear", "xgboost", "lstm", "all")
+$validModels = @("ou", "arma", "linear", "xgboost", "lstm", "lstm_encdec", "all")
 
 # Usage / Help Logic
 if ($ShowHelp) {
-    Write-Host "Usage: .\run_pipeline.ps1 -horizon <int> -top_k <int> -model <string> [-SkipDownload] [-SkipPrep] [-SkipPairDiscovery] [-SkipPairSelection] [-SkipDatasetBuilding] [-SkipModelTraining] [-SkipBacktesting]" -ForegroundColor Cyan
+    Write-Host "Usage: .\run_pipeline.ps1 -horizon <int> -top_k <int> -model <string> [-SkipDownload] [-SkipPrep] [-SkipPairDiscovery] [-SkipPairSelection] [-SkipDatasetBuilding] [-SkipModelTraining] [-SkipBestParamRuns] [-SkipBacktesting]" -ForegroundColor Cyan
     Write-Host "`nOptions:"
     Write-Host "  -horizon              Prediction horizon (default: 10)"
     Write-Host "  -top_k                Number of top pairs to select (default: 20)"
-    Write-Host "  -model                Model: ou, arma, linear, xgboost, lstm, all (default: all)"
+    Write-Host "  -model                Model: ou, arma, linear, xgboost, lstm, lstm_encdec, all (default: all)"
     Write-Host "  -SkipDownload         Skip checking/downloading the Kaggle raw data"
     Write-Host "  -SkipPrep             Skip Step 1 (python prepare_data.py)"
     Write-Host "  -SkipPairDiscovery    Skip Step 2 (PCA -> OPTICS -> Ranking)"
     Write-Host "  -SkipPairSelection    Skip Step 3 (Pair Selection)"
     Write-Host "  -SkipDatasetBuilding  Skip Step 4 (Dataset Building)"
     Write-Host "  -SkipModelTraining    Skip Step 5 (Model Training & Prediction)"
+    Write-Host "  -SkipBestParamRuns   Skip Step 6 (Frozen Best-Params Runs)"
     Write-Host "  -SkipBacktesting      Skip Step 6 (Backtesting Engine)"
     exit
 }
@@ -84,41 +86,41 @@ if ($SkipDownload) {
 
 # --- Step 1: Data Preparation ---
 if ($SkipPrep) {
-    Write-Host "==> [1/6] SkipPrep flag detected. Skipping preparation." -ForegroundColor Gray
+    Write-Host "==> [1/7] SkipPrep flag detected. Skipping preparation." -ForegroundColor Gray
 } else {
-    Write-Host "==> [1/6] Data Preparation" -ForegroundColor Green
+    Write-Host "==> [1/7] Data Preparation" -ForegroundColor Green
     & $py prepare_data.py
 }
 
 # --- Steps 2-4: Core Pipeline ---
 if ($SkipPairDiscovery) {
-    Write-Host "==> [2/6] SkipPairDiscovery flag detected. Skipping pair discovery." -ForegroundColor Gray
+    Write-Host "==> [2/7] SkipPairDiscovery flag detected. Skipping pair discovery." -ForegroundColor Gray
 } else {
-    Write-Host "==> [2/6] Pair Discovery (PCA -> OPTICS -> Ranking)" -ForegroundColor Green
+    Write-Host "==> [2/7] Pair Discovery (PCA -> OPTICS -> Ranking)" -ForegroundColor Green
     & $py -m src.clustering.pca
     & $py -m src.clustering.optics
     & $py -m src.pairs_discovery.rank_pairs
 }
 
 if ($SkipPairSelection) {
-    Write-Host "==> [3/6] SkipPairSelection flag detected. Skipping pair selection." -ForegroundColor Gray
+    Write-Host "==> [3/7] SkipPairSelection flag detected. Skipping pair selection." -ForegroundColor Gray
 } else {
-    Write-Host "==> [3/6] Pair Selection" -ForegroundColor Green
+    Write-Host "==> [3/7] Pair Selection" -ForegroundColor Green
     & $py -m src.pairs_discovery.pairs_selection --top_k $top_k
 }
 
 if ($SkipDatasetBuilding) {
-    Write-Host "==> [4/6] SkipDatasetBuilding flag detected. Skipping dataset building." -ForegroundColor Gray
+    Write-Host "==> [4/7] SkipDatasetBuilding flag detected. Skipping dataset building." -ForegroundColor Gray
 } else {
-    Write-Host "==> [4/6] Dataset Building" -ForegroundColor Green
+    Write-Host "==> [4/7] Dataset Building" -ForegroundColor Green
     & $py -m src.models.pair_dataset_builder
 }
 
 # --- Step 5: Model Training & Prediction ---
 if ($SkipModelTraining) {
-    Write-Host "==> [5/6] SkipModelTraining flag detected. Skipping model training." -ForegroundColor Gray
+    Write-Host "==> [5/7] SkipModelTraining flag detected. Skipping model training." -ForegroundColor Gray
 } else {
-    Write-Host "==> [5/6] Model Training & Prediction ($model)" -ForegroundColor Green
+    Write-Host "==> [5/7] Model Training & Prediction ($model)" -ForegroundColor Green
     switch ($model) {
         "ou"      { & $py -m src.models.ou }
         "arma"    { 
@@ -128,21 +130,62 @@ if ($SkipModelTraining) {
         "linear"  { & $py -m src.models.linear_regression }
         "xgboost" { & $py -m src.models.xgboost_model }
         "lstm"    { & $py -m src.models.lstm }
+        "lstm_encdec" { & $py -m src.models.lstm_encoder_decoder --spread ols kalman }
         "all"     {
             & $py -m src.models.ou
             & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon --eval_split val
+            & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon --eval_split val
             & $py -m src.models.linear_regression
             & $py -m src.models.xgboost_model
             & $py -m src.models.lstm
+            & $py -m src.models.lstm_encoder_decoder --spread ols kalman
         }
     }
 }
 
-# --- Step 6: Backtesting ---
-if ($SkipBacktesting) {
-    Write-Host "==> [6/6] SkipBacktesting flag detected. Skipping backtesting." -ForegroundColor Gray
+# --- Step 6: Frozen Best-Params Runs ---
+if ($SkipBestParamRuns) {
+    Write-Host "==> [6/7] SkipBestParamRuns flag detected. Skipping frozen-parameter runs." -ForegroundColor Gray
 } else {
-    Write-Host "==> [6/6] Backtesting Engine" -ForegroundColor Green
+    Write-Host "==> [6/7] Frozen Best-Params Runs ($model)" -ForegroundColor Green
+    switch ($model) {
+        "ou"      { & $py -m src.models.ou }
+        "arma"    {
+            & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
+            & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
+        }
+        "linear"  { & $py -m src.models.linear_regression }
+        "xgboost" {
+            & $py -m src.models.xgboost_model --spread_type both --no_tune
+            # better version after editing xgboost_model.py:
+            # & $py -m src.models.xgboost_model --spread_type both --no_tune --max_depth 4 --n_estimators 200 --learning_rate 0.05
+        }
+        "lstm"    {
+            & $py -m src.models.lstm --spread ols kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
+        }
+        "lstm_encdec" {
+            & $py -m src.models.lstm_encoder_decoder --spread ols kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
+        }
+        "all"     {
+            & $py -m src.models.ou
+            & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
+            & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
+            & $py -m src.models.linear_regression
+            & $py -m src.models.xgboost_model --spread_type ols --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
+            & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 3 --n_estimators 200 --learning_rate 0.01
+            & $py -m src.models.lstm --spread ols --hidden 32 --window_size 20 --lr 0.001 --no_tune
+            & $py -m src.models.lstm --spread kalman --hidden 32 --window_size 20 --lr 0.001 --no_tune
+            & $py -m src.models.lstm_encoder_decoder --spread ols --hidden 32 --window_size 20 --lr 0.0005 --no_tune
+            & $py -m src.models.lstm_encoder_decoder --spread kalman --hidden 64 --window_size 20 --lr 0.0005 --no_tune
+        }
+    }
+}
+
+# --- Step 7: Backtesting ---
+if ($SkipBacktesting) {
+    Write-Host "==> [7/7] SkipBacktesting flag detected. Skipping backtesting." -ForegroundColor Gray
+} else {
+    Write-Host "==> [7/7] Backtesting Engine" -ForegroundColor Green
     & $py -m src.backtest.backtest_engine
     & $py -m src.backtest.backtest_engine --holdout
 }

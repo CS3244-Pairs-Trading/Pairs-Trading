@@ -840,7 +840,7 @@ def run_lstm_encoder_decoder_pipeline(
             summary_df.to_csv(model_dir / "metrics_summary.csv", index=False)
             print(f"\nSummary saved: {model_dir / 'metrics_summary.csv'}")
             print(
-                f"  Avg MSE={summary_df['mse'].mean():.6f}, "
+                f"Avg MSE={summary_df['mse'].mean():.6f}, "
                 f"Avg MAE={summary_df['mae'].mean():.6f}, "
                 f"Avg RMSE={summary_df['rmse'].mean():.6f}, "
                 f"Avg DirAcc={summary_df['dir_acc'].mean():.3f}"
