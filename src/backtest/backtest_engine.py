@@ -370,6 +370,191 @@ class ZScoreSignal:
         return pd.Series(sig_arr, index=c1_test.index)
 
 
+class PredictionSignal:
+    """
+    Adaptive ML-prediction signal with per-pair quantile-calibrated thresholds.
+
+    Consumes pre-computed model predictions from
+    data/processed/predictions/<model_name>/<window_label>/predictions.csv
+    (columns: Date, pair, predicted_change or predicted_spread_change).
+
+    Rather than hardcoding z-thresholds, entry / exit / stop levels are
+    learned per pair from the empirical distribution of that pair's
+    predicted_change values over a causal warmup window at the start of
+    the test period. This mirrors QuantileZScoreSignal in spirit — the
+    same rule works for pairs whose predicted_change is tiny, noisy, or
+    highly skewed, because the thresholds are self-scaled.
+
+    Direction convention matches the engine: +1 long spread when the
+    model expects the spread to rise, -1 short when it expects it to
+    fall. Warmup days are held flat (no look-ahead).
+    """
+
+    def __init__(
+        self,
+        predictions_root: str | Path,
+        entry_quantile:   float = DEFAULT_BACKTEST_PARAMS.entry_quantile,
+        exit_quantile:    float = DEFAULT_BACKTEST_PARAMS.exit_quantile,
+        stop_quantile:    float = DEFAULT_BACKTEST_PARAMS.stop_quantile,
+        warmup_days:      int   = 60,
+        min_obs:          int   = DEFAULT_BACKTEST_PARAMS.quantile_min_obs,
+    ) -> None:
+        self.predictions_root = Path(predictions_root)
+        self.entry_quantile   = entry_quantile
+        self.exit_quantile    = exit_quantile
+        self.stop_quantile    = stop_quantile
+        self.warmup_days      = warmup_days
+        self.min_obs          = min_obs
+
+        self._window_cache: dict[str, Optional[pd.DataFrame]] = {}
+        self._current_preds: Optional[pd.Series]              = None
+        self.n_missing_pairs  = 0
+        self.n_matched_pairs  = 0
+
+    def _load_window(self, window_label: str) -> Optional[pd.DataFrame]:
+        if window_label in self._window_cache:
+            return self._window_cache[window_label]
+
+        path = self.predictions_root / window_label / "predictions.csv"
+        if not path.exists():
+            self._window_cache[window_label] = None
+            return None
+
+        df = pd.read_csv(path, parse_dates=["Date"])
+        if "predicted_change" not in df.columns:
+            if "predicted_spread_change" in df.columns:
+                df = df.rename(columns={"predicted_spread_change": "predicted_change"})
+            else:
+                raise ValueError(
+                    f"{path} missing predicted_change / predicted_spread_change column"
+                )
+
+        self._window_cache[window_label] = df
+        return df
+
+    def fit(
+        self,
+        c1_train: pd.Series,
+        c2_train: pd.Series,
+        stats:    dict,
+    ) -> None:
+        pair   = stats.get("pair")
+        window = stats.get("window")
+        if pair is None or window is None:
+            raise ValueError(
+                "PredictionSignal requires 'pair' and 'window' in the stats dict "
+                "passed to fit() — make sure the engine injects them."
+            )
+
+        df = self._load_window(window)
+        if df is None:
+            self._current_preds = None
+            return
+
+        sub = df.loc[df["pair"] == pair, ["Date", "predicted_change"]]
+        if sub.empty:
+            self._current_preds = None
+            self.n_missing_pairs += 1
+            return
+
+        self._current_preds = (
+            sub.dropna(subset=["predicted_change"])
+               .set_index("Date")["predicted_change"]
+               .sort_index()
+        )
+        self.n_matched_pairs += 1
+
+    def _calibrate(self, warmup: pd.Series) -> Optional[dict[str, float]]:
+        """
+        Derive signed entry/exit/stop thresholds from a warmup distribution.
+        Returns None if the distribution is unusable.
+        """
+        warmup = warmup.dropna()
+        if len(warmup) < self.min_obs:
+            return None
+
+        upper_entry = float(warmup.quantile(1.0 - self.entry_quantile))
+        lower_entry = float(warmup.quantile(self.entry_quantile))
+        upper_exit  = float(warmup.quantile(1.0 - self.exit_quantile))
+        lower_exit  = float(warmup.quantile(self.exit_quantile))
+
+        # Sanity: entry bands must sit outside the exit band
+        if upper_entry <= upper_exit or lower_entry >= lower_exit:
+            return None
+
+        if self.stop_quantile > 0:
+            upper_stop = float(warmup.quantile(1.0 - self.stop_quantile))
+            lower_stop = float(warmup.quantile(self.stop_quantile))
+            # Sanity: stops must sit outside the entry band
+            if upper_stop <= upper_entry or lower_stop >= lower_entry:
+                upper_stop = lower_stop = None  # disable stops
+        else:
+            upper_stop = lower_stop = None
+
+        return {
+            "upper_entry": upper_entry,
+            "lower_entry": lower_entry,
+            "upper_exit":  upper_exit,
+            "lower_exit":  lower_exit,
+            "upper_stop":  upper_stop,
+            "lower_stop":  lower_stop,
+        }
+
+    def predict(
+        self,
+        c1_test: pd.Series,
+        c2_test: pd.Series,
+    ) -> pd.Series:
+        n   = len(c1_test)
+        arr = np.zeros(n, dtype=int)
+
+        preds = self._current_preds
+        if preds is None or preds.empty:
+            return pd.Series(arr, index=c1_test.index)
+
+        change = preds.reindex(c1_test.index)
+
+        # Causal warmup: fit thresholds on the first `warmup_days` predictions.
+        warmup_end = min(self.warmup_days, n)
+        thresholds = self._calibrate(change.iloc[:warmup_end])
+        if thresholds is None:
+            return pd.Series(arr, index=c1_test.index)
+
+        ue = thresholds["upper_entry"]
+        le = thresholds["lower_entry"]
+        ux = thresholds["upper_exit"]
+        lx = thresholds["lower_exit"]
+        us = thresholds["upper_stop"]
+        ls = thresholds["lower_stop"]
+
+        pos = 0
+        for i in range(warmup_end, n):
+            val_raw = change.iloc[i]
+            if pd.isna(val_raw):
+                arr[i] = pos
+                continue
+            val = float(val_raw)
+
+            if pos == 0:
+                if val >= ue:
+                    pos = 1       # strong upward prediction → long spread
+                elif val <= le:
+                    pos = -1      # strong downward prediction → short spread
+            else:
+                if lx <= val <= ux:
+                    pos = 0       # prediction weakens → exit
+                elif us is not None and (val >= us or val <= ls):
+                    pos = 0       # extreme prediction → likely noise, bail
+                elif pos == 1 and val <= le:
+                    pos = -1      # reverse long → short
+                elif pos == -1 and val >= ue:
+                    pos = 1       # reverse short → long
+
+            arr[i] = pos
+
+        return pd.Series(arr, index=c1_test.index)
+
+
 # ──────────────────────────────────────────────────────────
 # EXECUTION ENGINE  (model-agnostic)
 # ──────────────────────────────────────────────────────────
@@ -591,7 +776,8 @@ class BacktestEngine:
 
         for _, row in window_pairs.iterrows():
             pair_name = row["pair"]
-            s1, s2    = pair_name.split("-", 1)
+            s1        = row["stock_a"]
+            s2        = row["stock_b"]
             beta      = float(row["initial_beta"])
 
             if s1 not in self._wide.columns or s2 not in self._wide.columns:
@@ -604,6 +790,8 @@ class BacktestEngine:
             if len(tr_idx) < 63:      # need ≥ 3 months to estimate stats
                 continue
             s_stats = _spread_stats(tr1.loc[tr_idx], tr2.loc[tr_idx], beta)
+            s_stats["pair"]   = pair_name
+            s_stats["window"] = window_label
 
             # align test data
             te1    = test_close[s1].dropna()
@@ -939,9 +1127,50 @@ def main() -> None:
         "--pairs", default=str(DEFAULT_CONFIG.processed_dir / "discovered_pairs.csv"),
         help="Path to discovered_pairs.csv",
     )
-    parser.add_argument("--entry_z",   type=float, default=2.0,  help="ZScore entry threshold")
-    parser.add_argument("--exit_z",    type=float, default=0.5,  help="ZScore exit threshold")
-    parser.add_argument("--stop_z",    type=float, default=4.0,  help="ZScore stop-loss (0=off)")
+    parser.add_argument(
+        "--model",
+        default="zscore",
+        help=(
+            "Signal model to use. "
+            "'zscore' (default) — classic fixed-threshold mean-reversion. "
+            "'quantile_zscore' — per-pair adaptive thresholds from training "
+            "z-score quantiles. "
+            "Any other value is treated as a subdirectory name under "
+            "data/processed/predictions/ (e.g. 'linear_regression', "
+            "'xgboost_ols', 'xgboost_kalman', 'lstm_ols', 'lstm_kalman') and "
+            "loads pre-computed ML predictions via PredictionSignal, which "
+            "also uses per-pair quantile-calibrated thresholds."
+        ),
+    )
+    # Fixed-threshold zscore params
+    parser.add_argument("--entry_z",   type=float, default=2.0,  help="ZScore entry threshold (zscore model)")
+    parser.add_argument("--exit_z",    type=float, default=0.5,  help="ZScore exit threshold (zscore model)")
+    parser.add_argument("--stop_z",    type=float, default=4.0,  help="ZScore stop-loss, 0=off (zscore model)")
+    # Quantile params — shared between quantile_zscore and ML PredictionSignal
+    parser.add_argument(
+        "--entry_q",
+        type=float,
+        default=DEFAULT_BACKTEST_PARAMS.entry_quantile,
+        help="Entry quantile (lower tail) for quantile_zscore and ML models",
+    )
+    parser.add_argument(
+        "--exit_q",
+        type=float,
+        default=DEFAULT_BACKTEST_PARAMS.exit_quantile,
+        help="Exit quantile (lower tail) for quantile_zscore and ML models",
+    )
+    parser.add_argument(
+        "--stop_q",
+        type=float,
+        default=DEFAULT_BACKTEST_PARAMS.stop_quantile,
+        help="Stop-loss quantile, 0=off (quantile_zscore and ML models)",
+    )
+    parser.add_argument(
+        "--pred_warmup",
+        type=int,
+        default=60,
+        help="Days of test-period predictions used for per-pair PredictionSignal calibration",
+    )
     parser.add_argument("--n_pairs",   type=int,   default=50,   help="Max pairs per window")
     parser.add_argument("--capital",   type=float, default=1e6,  help="Initial capital ($)")
     parser.add_argument("--tc_bps",    type=float, default=10.0, help="Transaction cost (bps/side)")
@@ -968,8 +1197,54 @@ def main() -> None:
     engine = BacktestEngine(cfg)
     engine.load_data(args.prices, args.pairs)
 
-    # CLI always uses ZScoreSignal; custom models are injected programmatically
-    results = engine.run_holdout() if args.holdout else engine.run()
+    model_name = args.model.lower()
+    if model_name == "zscore":
+        signal_generator = None  # engine falls back to ZScoreSignal from cfg
+    elif model_name == "quantile_zscore":
+        from src.backtest.quantile_zscore_signal import QuantileZScoreSignal
+        signal_generator = QuantileZScoreSignal(
+            entry_quantile   = args.entry_q,
+            exit_quantile    = args.exit_q,
+            stop_quantile    = args.stop_q,
+            use_rolling      = args.rolling_z,
+            rolling_lookback = args.lookback,
+        )
+        print(
+            f"[BacktestEngine] Signal model   → QuantileZScoreSignal("
+            f"entry_q={args.entry_q}, exit_q={args.exit_q}, stop_q={args.stop_q})"
+        )
+    else:
+        predictions_root = DEFAULT_CONFIG.processed_dir / "predictions" / args.model
+        if not predictions_root.exists():
+            raise SystemExit(
+                f"[error] Predictions directory not found: {predictions_root}\n"
+                f"        Available models under data/processed/predictions/ "
+                f"are the subdirectory names there."
+            )
+        signal_generator = PredictionSignal(
+            predictions_root = predictions_root,
+            entry_quantile   = args.entry_q,
+            exit_quantile    = args.exit_q,
+            stop_quantile    = args.stop_q,
+            warmup_days      = args.pred_warmup,
+        )
+        print(
+            f"[BacktestEngine] Signal model   → PredictionSignal({args.model}, "
+            f"entry_q={args.entry_q}, exit_q={args.exit_q}, "
+            f"stop_q={args.stop_q}, warmup={args.pred_warmup}d)"
+        )
+
+    if args.holdout:
+        results = engine.run_holdout(signal_generator=signal_generator)
+    else:
+        results = engine.run(signal_generator=signal_generator)
+
+    if isinstance(signal_generator, PredictionSignal):
+        print(
+            f"  → matched predictions for {signal_generator.n_matched_pairs} pair-windows, "
+            f"missing for {signal_generator.n_missing_pairs}"
+        )
+
     engine.report(results)
 
     if args.save:

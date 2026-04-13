@@ -190,7 +190,8 @@ def kalman_vs_ols_comparison(
             continue
 
         pair_name = row["pair"]
-        s1, s2 = pair_name.split("-", 1)
+        s1 = row["stock_a"]
+        s2 = row["stock_b"]
 
         if s1 not in log_prices.columns or s2 not in log_prices.columns:
             continue
