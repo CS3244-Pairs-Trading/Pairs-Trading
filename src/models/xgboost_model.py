@@ -591,7 +591,11 @@ def run_variant(
             rolling_dirs, spread_type, min_samples
         )
     else:
-        best_params = {"max_depth": 4, "n_estimators": 200, "learning_rate": 0.05}
+        best_params = {
+            "max_depth": args.max_depth if args.max_depth is not None else 4,
+            "n_estimators": args.n_estimators if args.n_estimators is not None else 200,
+            "learning_rate": args.learning_rate if args.learning_rate is not None else 0.05,
+        }
         tuning_df   = pd.DataFrame()
         print(f"\n  Skipping tuning — using default params: {best_params}")
 
@@ -697,6 +701,9 @@ if __name__ == "__main__":
         help="Skip grid search and use default hyperparameters.",
     )
     parser.add_argument("--min_samples", type=int, default=30)
+    parser.add_argument("--max_depth", type=int, default=None)
+    parser.add_argument("--n_estimators", type=int, default=None)
+    parser.add_argument("--learning_rate", type=float, default=None)
     args = parser.parse_args()
 
     datasets_root = Path(args.pair_datasets_root) if args.pair_datasets_root else None
