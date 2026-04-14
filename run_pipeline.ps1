@@ -146,8 +146,8 @@ if ($SkipModelTraining) {
         switch ($model) {
             "ou"      { & $py -m src.models.ou }
             "arma"    { 
-                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon --eval_split val
-                & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon --eval_split val
+                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
+                & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon
             }
             "linear"  { & $py -m src.models.linear_regression }
             "xgboost" { & $py -m src.models.xgboost_model }
@@ -155,8 +155,8 @@ if ($SkipModelTraining) {
             "lstm_encdec" { & $py -m src.models.lstm_encoder_decoder --spread ols kalman }
             "all"     {
                 & $py -m src.models.ou
-                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon --eval_split val
-                & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon --eval_split val
+                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
+                & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon
                 & $py -m src.models.linear_regression
                 & $py -m src.models.xgboost_model
                 & $py -m src.models.lstm
