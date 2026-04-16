@@ -17,8 +17,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.backtest.backtest_engine import BacktestEngine, BacktestConfig, ZScoreSignal
+from src.backtest.backtest_engine import BacktestEngine, BacktestConfig, ZScoreSignal, execute_signals
 
 
 # ── Synthetic data generation ──────────────────────────────────────────────────
@@ -66,10 +67,10 @@ def build_synthetic_engine(cfg: BacktestConfig) -> BacktestEngine:
     # Window definitions matching config.py
     windows = [
         ("2010_2012", "2010-01-02", "2012-12-31", "2013-01-02", "2013-12-31"),
-        ("2010_2013", "2010-01-02", "2013-12-31", "2014-01-02", "2014-12-31"),
-        ("2010_2014", "2010-01-02", "2014-12-31", "2015-01-02", "2015-12-31"),
-        ("2010_2015", "2010-01-02", "2015-12-31", "2016-01-02", "2016-12-31"),
-        ("2010_2016", "2010-01-02", "2016-12-31", "2017-01-02", "2017-12-31"),
+        ("2011_2013", "2011-01-02", "2013-12-31", "2014-01-02", "2014-12-31"),
+        ("2012_2014", "2012-01-02", "2014-12-31", "2015-01-02", "2015-12-31"),
+        ("2013_2015", "2013-01-02", "2015-12-31", "2016-01-02", "2016-12-31"),
+        ("2014_2016", "2014-01-02", "2016-12-31", "2017-01-02", "2017-12-31"),
     ]
 
     all_prices: dict[str, pd.Series] = {}
@@ -93,6 +94,8 @@ def build_synthetic_engine(cfg: BacktestConfig) -> BacktestEngine:
 
             pair_rows.append({
                 "pair":            f"{a_name}-{b_name}",
+                "stock_a":         a_name,
+                "stock_b":         b_name,
                 "training_window": label,
                 "is_eligible":     True,
                 "score":           0.80 - j * 0.05,
@@ -197,6 +200,91 @@ def test_custom_signal():
 
     assert "__aggregate__" in results
     print("Custom signal OK\n")
+
+
+def test_execute_signals_forced_close_books_cost():
+    dates = pd.bdate_range("2017-01-02", periods=3)
+    c1 = pd.Series([100.0, 101.0, 102.0], index=dates)
+    c2 = pd.Series([100.0, 100.5, 101.0], index=dates)
+    signals = pd.Series([0, 1, 1], index=dates)
+
+    pnl, tv, _, _ = execute_signals(
+        c1,
+        c2,
+        signals,
+        beta=1.0,
+        cfg=BacktestConfig(transaction_cost_bps=10.0),
+        allocation=10_000.0,
+    )
+
+    close_cost = 10_000.0 * (10.0 / 10_000.0) * 2.0
+    assert tv.iloc[-1] > 0.0, "Forced close should contribute turnover on the last day"
+    assert pnl.iloc[-1] < 24.0, "Forced close cost should reduce final-day P&L"
+    assert pnl.iloc[-1] == pytest.approx(24.629328604501843 - close_cost, rel=1e-6)
+
+
+class DummyCoverageSignal:
+    def __init__(self, tradable_pairs: set[str]) -> None:
+        self.tradable_pairs = tradable_pairs
+
+    def has_pair_predictions(self, window_label: str, pair_name: str) -> bool:
+        return pair_name in self.tradable_pairs
+
+    def fit(self, c1_train, c2_train, stats):
+        self._pair = stats["pair"]
+
+    def predict(self, c1_test, c2_test):
+        arr = np.zeros(len(c1_test), dtype=int)
+        if len(arr) > 1:
+            arr[1:] = 1
+        return pd.Series(arr, index=c1_test.index)
+
+
+def test_engine_allocates_only_across_tradable_pairs():
+    dates = pd.bdate_range("2014-01-02", periods=90)
+    price_cols = {
+        "A1": pd.Series(np.linspace(100.0, 110.0, len(dates)), index=dates),
+        "B1": pd.Series(np.linspace(95.0, 100.0, len(dates)), index=dates),
+        "A2": pd.Series(np.linspace(80.0, 84.0, len(dates)), index=dates),
+        "B2": pd.Series(np.linspace(75.0, 79.0, len(dates)), index=dates),
+    }
+
+    engine = BacktestEngine(BacktestConfig(n_top_pairs=2, initial_capital=100_000.0))
+    engine._wide = pd.DataFrame(price_cols)
+    engine.pairs = pd.DataFrame(
+        [
+            {
+                "pair": "A1-B1",
+                "stock_a": "A1",
+                "stock_b": "B1",
+                "training_window": "2014_2016",
+                "is_eligible": True,
+                "score": 0.9,
+                "initial_beta": 1.0,
+            },
+            {
+                "pair": "A2-B2",
+                "stock_a": "A2",
+                "stock_b": "B2",
+                "training_window": "2014_2016",
+                "is_eligible": True,
+                "score": 0.8,
+                "initial_beta": 1.0,
+            },
+        ]
+    )
+
+    res = engine._run_window(
+        "2014_2016",
+        train_end="2014-04-30",
+        test_start="2014-05-01",
+        test_end="2014-05-07",
+        signal_generator=DummyCoverageSignal({"A1-B1"}),
+    )
+
+    assert res is not None
+    assert res["n_pairs_selected"] == 2
+    assert res["n_pairs_tradable"] == 1
 
 
 if __name__ == "__main__":

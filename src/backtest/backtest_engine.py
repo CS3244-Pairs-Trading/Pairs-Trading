@@ -81,6 +81,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import DEFAULT_CONFIG, DEFAULT_BACKTEST_PARAMS
+from src.pairs_discovery.kalman_hedge import kalman_hedge_ratio
 
 warnings.filterwarnings("ignore")
 
@@ -231,6 +232,63 @@ def _zscore(
         mu  = stats["mean"]
         sig = max(stats["std"], 1e-8)
     return (spread - mu) / sig
+
+
+def _infer_prediction_spread_type(
+    predictions_root: Path,
+    explicit: str | None = None,
+) -> str:
+    if explicit is not None:
+        if explicit not in {"ols", "kalman"}:
+            raise ValueError(f"spread_type must be 'ols' or 'kalman', got '{explicit}'")
+        return explicit
+
+    name = predictions_root.name.lower()
+    return "kalman" if "kalman" in name else "ols"
+
+
+def _dynamic_beta_series(
+    train_c1: pd.Series,
+    train_c2: pd.Series,
+    test_c1: pd.Series,
+    test_c2: pd.Series,
+) -> pd.Series:
+    full_c1 = pd.concat([train_c1, test_c1]).sort_index()
+    full_c1 = full_c1[~full_c1.index.duplicated(keep="last")]
+    full_c2 = pd.concat([train_c2, test_c2]).sort_index()
+    full_c2 = full_c2[~full_c2.index.duplicated(keep="last")]
+
+    common = full_c1.index.intersection(full_c2.index)
+    beta_arr = kalman_hedge_ratio(
+        np.log(full_c1.loc[common].values),
+        np.log(full_c2.loc[common].values),
+    )
+    beta = pd.Series(beta_arr, index=common, name="beta")
+    test_idx = test_c1.index.intersection(test_c2.index)
+    return beta.reindex(test_idx)
+
+
+def _has_pair_predictions(
+    signal_generator: SignalGenerator,
+    window_label: str,
+    pair_name: str,
+) -> bool:
+    checker = getattr(signal_generator, "has_pair_predictions", None)
+    if not callable(checker):
+        return True
+    return bool(checker(window_label, pair_name))
+
+
+def _resolve_execution_beta(
+    signal_generator: SignalGenerator,
+    beta_default: float,
+) -> "float | pd.Series":
+    getter = getattr(signal_generator, "get_execution_beta", None)
+    if not callable(getter):
+        return beta_default
+
+    beta_exec = getter()
+    return beta_default if beta_exec is None else beta_exec
 
 
 # ──────────────────────────────────────────────────────────
@@ -396,20 +454,32 @@ class PredictionSignal:
         entry_quantile:   float = DEFAULT_BACKTEST_PARAMS.entry_quantile,
         exit_quantile:    float = DEFAULT_BACKTEST_PARAMS.exit_quantile,
         stop_quantile:    float = DEFAULT_BACKTEST_PARAMS.stop_quantile,
-        warmup_days:      int   = 60,
+        warmup_days:      int   = 30,
+        min_hold_days:    int   = 10,
         min_obs:          int   = DEFAULT_BACKTEST_PARAMS.quantile_min_obs,
+        spread_type:      str | None = None,
     ) -> None:
         self.predictions_root = Path(predictions_root)
         self.entry_quantile   = entry_quantile
         self.exit_quantile    = exit_quantile
         self.stop_quantile    = stop_quantile
         self.warmup_days      = warmup_days
+        self.min_hold_days    = min_hold_days
         self.min_obs          = min_obs
+        self.spread_type      = _infer_prediction_spread_type(self.predictions_root, spread_type)
 
         self._window_cache: dict[str, Optional[pd.DataFrame]] = {}
         self._current_preds: Optional[pd.Series]              = None
+        self._train_c1: Optional[pd.Series]                   = None
+        self._train_c2: Optional[pd.Series]                   = None
+        self._beta: float                                     = 1.0
+        self._execution_beta: float | pd.Series | None        = None
         self.n_missing_pairs  = 0
         self.n_matched_pairs  = 0
+
+    @property
+    def has_prediction_data(self) -> bool:
+        return self._current_preds is not None and not self._current_preds.empty
 
     def _load_window(self, window_label: str) -> Optional[pd.DataFrame]:
         if window_label in self._window_cache:
@@ -432,6 +502,18 @@ class PredictionSignal:
         self._window_cache[window_label] = df
         return df
 
+    def has_pair_predictions(self, window_label: str, pair: str) -> bool:
+        df = self._load_window(window_label)
+        if df is None:
+            return False
+        sub = df.loc[df["pair"] == pair]
+        if sub.empty:
+            return False
+        return bool(sub["predicted_change"].notna().any() or sub.get("predicted_spread_change", pd.Series(dtype=float)).notna().any())
+
+    def get_execution_beta(self) -> float | pd.Series | None:
+        return self._execution_beta
+
     def fit(
         self,
         c1_train: pd.Series,
@@ -445,6 +527,10 @@ class PredictionSignal:
                 "PredictionSignal requires 'pair' and 'window' in the stats dict "
                 "passed to fit() — make sure the engine injects them."
             )
+        self._train_c1 = c1_train.sort_index()
+        self._train_c2 = c2_train.sort_index()
+        self._beta = float(stats.get("beta", 1.0))
+        self._execution_beta = self._beta
 
         df = self._load_window(window)
         if df is None:
@@ -505,6 +591,15 @@ class PredictionSignal:
         c1_test: pd.Series,
         c2_test: pd.Series,
     ) -> pd.Series:
+        """
+        Threshold-based ML signal with book-style direction exits.
+
+        Entry requires a sufficiently large forecast from the warmup-fitted
+        tail thresholds. Once a position is open, it is kept while the
+        prediction direction persists. For horizon-style forecasts, the
+        position must be renewed by another threshold breach every
+        `min_hold_days` steps; otherwise it is closed as stale.
+        """
         n   = len(c1_test)
         arr = np.zeros(n, dtype=int)
 
@@ -512,43 +607,61 @@ class PredictionSignal:
         if preds is None or preds.empty:
             return pd.Series(arr, index=c1_test.index)
 
-        change = preds.reindex(c1_test.index)
+        if self.spread_type == "kalman":
+            if self._train_c1 is not None and self._train_c2 is not None:
+                self._execution_beta = _dynamic_beta_series(
+                    self._train_c1,
+                    self._train_c2,
+                    c1_test,
+                    c2_test,
+                )
+        else:
+            self._execution_beta = self._beta
 
-        # Causal warmup: fit thresholds on the first `warmup_days` predictions.
+        change = preds.reindex(c1_test.index)
         warmup_end = min(self.warmup_days, n)
         thresholds = self._calibrate(change.iloc[:warmup_end])
         if thresholds is None:
             return pd.Series(arr, index=c1_test.index)
 
-        ue = thresholds["upper_entry"]
-        le = thresholds["lower_entry"]
-        ux = thresholds["upper_exit"]
-        lx = thresholds["lower_exit"]
-        us = thresholds["upper_stop"]
-        ls = thresholds["lower_stop"]
+        upper_entry = thresholds["upper_entry"]
+        lower_entry = thresholds["lower_entry"]
 
         pos = 0
+        hold_count = 0
         for i in range(warmup_end, n):
             val_raw = change.iloc[i]
             if pd.isna(val_raw):
+                if pos != 0:
+                    hold_count += 1
+                    if self.min_hold_days > 0 and hold_count >= self.min_hold_days:
+                        pos = 0
+                        hold_count = 0
                 arr[i] = pos
                 continue
             val = float(val_raw)
 
             if pos == 0:
-                if val >= ue:
-                    pos = 1       # strong upward prediction → long spread
-                elif val <= le:
-                    pos = -1      # strong downward prediction → short spread
+                if val >= upper_entry:
+                    pos = 1
+                    hold_count = 0
+                elif val <= lower_entry:
+                    pos = -1
+                    hold_count = 0
             else:
-                if lx <= val <= ux:
-                    pos = 0       # prediction weakens → exit
-                elif us is not None and (val >= us or val <= ls):
-                    pos = 0       # extreme prediction → likely noise, bail
-                elif pos == 1 and val <= le:
-                    pos = -1      # reverse long → short
-                elif pos == -1 and val >= ue:
-                    pos = 1       # reverse short → long
+                hold_count += 1
+                direction_persists = (pos == 1 and val > 0) or (pos == -1 and val < 0)
+                refreshed = (pos == 1 and val >= upper_entry) or (pos == -1 and val <= lower_entry)
+
+                if not direction_persists:
+                    pos = 0
+                    hold_count = 0
+                elif self.min_hold_days > 0 and hold_count >= self.min_hold_days:
+                    if refreshed:
+                        hold_count = 0
+                    else:
+                        pos = 0
+                        hold_count = 0
 
             arr[i] = pos
 
@@ -562,7 +675,7 @@ def execute_signals(
     c1:         pd.Series,
     c2:         pd.Series,
     signals:    pd.Series,
-    beta:       float,
+    beta:       "float | pd.Series",
     cfg:        BacktestConfig,
     allocation: float,
 ) -> tuple[pd.Series, pd.Series, dict, dict]:
@@ -581,7 +694,7 @@ def execute_signals(
     ----------
     c1, c2    : test-period Close prices (aligned index)
     signals   : pd.Series {-1, 0, +1} produced by any SignalGenerator.predict()
-    beta      : hedge ratio from training data
+    beta      : hedge ratio — scalar (fixed) or pd.Series (time-varying Kalman)
     cfg       : BacktestConfig  (used for transaction_cost_bps only)
     allocation: dollar allocation for this pair
 
@@ -592,9 +705,12 @@ def execute_signals(
     n_long_yr   : dict {year → long-side trade count}
     n_short_yr  : dict {year → short-side trade count}
     """
-    denom   = 1.0 + abs(beta)
-    k1      = allocation / denom
-    k2      = allocation * abs(beta) / denom
+    # Support both fixed and time-varying beta
+    if isinstance(beta, pd.Series):
+        beta_arr = beta.reindex(c1.index).ffill().bfill().values.astype(np.float64)
+    else:
+        beta_arr = np.full(len(c1), float(beta))
+
     tc_rate = cfg.transaction_cost_bps / 10_000.0
 
     ret1 = c1.pct_change().fillna(0.0)
@@ -611,6 +727,11 @@ def execute_signals(
 
     for i in range(1, n):
         new_pos = int(signals.iloc[i])
+
+        b_i   = float(beta_arr[i])
+        denom = 1.0 + abs(b_i)
+        k1    = allocation / denom
+        k2    = allocation * abs(b_i) / denom
 
         # ── P&L: earned from the position held at the start of day i ────
         if pos != 0:
@@ -636,6 +757,11 @@ def execute_signals(
 
     # ── force-close any open position at period end ──────────────────────
     if pos != 0:
+        close_allocation = allocation
+        close_cost = close_allocation * tc_rate * 2.0
+        pnl_arr[-1] -= close_cost
+        tv_arr[-1] += close_allocation
+
         yr = int(c1.index[-1].year)
         if pos == 1:
             n_short_yr[yr] = n_short_yr.get(yr, 0) + 1
@@ -759,11 +885,56 @@ class BacktestEngine:
             print(f"  [SKIP] {window_label}: no price data for {test_start}–{test_end}")
             return None
 
-        n_pairs    = len(window_pairs)
-        allocation = cfg.initial_capital / max(n_pairs, 1)
+        candidate_jobs: list[dict] = []
+        for _, row in window_pairs.iterrows():
+            pair_name = row["pair"]
+            s1 = row["stock_a"]
+            s2 = row["stock_b"]
+            beta = float(row["initial_beta"])
+
+            if s1 not in self._wide.columns or s2 not in self._wide.columns:
+                continue
+
+            tr1 = train_close[s1].dropna()
+            tr2 = train_close[s2].dropna()
+            tr_idx = tr1.index.intersection(tr2.index)
+            if len(tr_idx) < 63:
+                continue
+
+            te1 = test_close[s1].dropna()
+            te2 = test_close[s2].dropna()
+            te_idx = te1.index.intersection(te2.index)
+            if len(te_idx) < 5:
+                continue
+
+            candidate_jobs.append(
+                {
+                    "pair_name": pair_name,
+                    "stock_a": s1,
+                    "stock_b": s2,
+                    "beta": beta,
+                    "tr1": tr1.loc[tr_idx],
+                    "tr2": tr2.loc[tr_idx],
+                    "te1": te1.loc[te_idx],
+                    "te2": te2.loc[te_idx],
+                    "has_predictions": _has_pair_predictions(signal_generator, window_label, pair_name),
+                }
+            )
+
+        if not candidate_jobs:
+            print(f"  [SKIP] {window_label}: no pairs with usable price history")
+            return None
+
+        run_jobs = [job for job in candidate_jobs if job["has_predictions"]]
+        if not run_jobs:
+            run_jobs = candidate_jobs
+
+        n_pairs_selected = len(candidate_jobs)
+        n_pairs_tradable = len(run_jobs)
+        allocation = cfg.initial_capital / max(n_pairs_selected, 1)
 
         print(
-            f"[{window_label}]  pairs={n_pairs:3d}  |  "
+            f"[{window_label}]  selected={n_pairs_selected:3d}  |  tradable={n_pairs_tradable:3d}  |  "
             f"test {test_start} → {test_end}  ({len(test_close)} days)  |  "
             f"model={type(signal_generator).__name__}"
         )
@@ -774,42 +945,20 @@ class BacktestEngine:
         n_long_yr:  dict[int, int]       = {}
         n_short_yr: dict[int, int]       = {}
 
-        for _, row in window_pairs.iterrows():
-            pair_name = row["pair"]
-            s1        = row["stock_a"]
-            s2        = row["stock_b"]
-            beta      = float(row["initial_beta"])
-
-            if s1 not in self._wide.columns or s2 not in self._wide.columns:
-                continue
-
-            # align training data
-            tr1    = train_close[s1].dropna()
-            tr2    = train_close[s2].dropna()
-            tr_idx = tr1.index.intersection(tr2.index)
-            if len(tr_idx) < 63:      # need ≥ 3 months to estimate stats
-                continue
-            s_stats = _spread_stats(tr1.loc[tr_idx], tr2.loc[tr_idx], beta)
-            s_stats["pair"]   = pair_name
+        for job in run_jobs:
+            pair_name = job["pair_name"]
+            beta = float(job["beta"])
+            s_stats = _spread_stats(job["tr1"], job["tr2"], beta)
+            s_stats["pair"] = pair_name
             s_stats["window"] = window_label
 
-            # align test data
-            te1    = test_close[s1].dropna()
-            te2    = test_close[s2].dropna()
-            te_idx = te1.index.intersection(te2.index)
-            if len(te_idx) < 5:
-                continue
-
-            te1_a = te1.loc[te_idx]
-            te2_a = te2.loc[te_idx]
-
-            # fit on training data, predict on test data
-            signal_generator.fit(tr1.loc[tr_idx], tr2.loc[tr_idx], s_stats)
-            signals = signal_generator.predict(te1_a, te2_a)
+            signal_generator.fit(job["tr1"], job["tr2"], s_stats)
+            signals = signal_generator.predict(job["te1"], job["te2"])
+            beta_exec = _resolve_execution_beta(signal_generator, beta)
 
             # execute — identical path for every model
             pnl, tv, lng, sht = execute_signals(
-                te1_a, te2_a, signals, beta, cfg, allocation
+                job["te1"], job["te2"], signals, beta_exec, cfg, allocation
             )
 
             all_pnl[pair_name] = pnl
@@ -840,7 +989,9 @@ class BacktestEngine:
             "window":         window_label,
             "test_start":     test_start,
             "test_end":       test_end,
-            "n_pairs":        n_pairs,
+            "n_pairs":        n_pairs_tradable,
+            "n_pairs_selected": n_pairs_selected,
+            "n_pairs_tradable": n_pairs_tradable,
             "model":          type(signal_generator).__name__,
             "daily_returns":  daily_ret,
             "daily_turnover": daily_tv,
@@ -1168,8 +1319,14 @@ def main() -> None:
     parser.add_argument(
         "--pred_warmup",
         type=int,
-        default=60,
+        default=30,
         help="Days of test-period predictions used for per-pair PredictionSignal calibration",
+    )
+    parser.add_argument(
+        "--min_hold",
+        type=int,
+        default=10,
+        help="Minimum days to hold a position before allowing exit (ML models)",
     )
     parser.add_argument("--n_pairs",   type=int,   default=50,   help="Max pairs per window")
     parser.add_argument("--capital",   type=float, default=1e6,  help="Initial capital ($)")
@@ -1227,11 +1384,11 @@ def main() -> None:
             exit_quantile    = args.exit_q,
             stop_quantile    = args.stop_q,
             warmup_days      = args.pred_warmup,
+            min_hold_days    = args.min_hold,
         )
         print(
             f"[BacktestEngine] Signal model   → PredictionSignal({args.model}, "
-            f"entry_q={args.entry_q}, exit_q={args.exit_q}, "
-            f"stop_q={args.stop_q}, warmup={args.pred_warmup}d)"
+            f"min_hold={args.min_hold}d)"
         )
 
     if args.holdout:
