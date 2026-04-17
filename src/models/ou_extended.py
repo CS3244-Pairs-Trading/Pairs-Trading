@@ -139,6 +139,16 @@ class OUModel: # Baseline
         if np.isnan(self.theta) or self.eq_std == 0:
             return np.nan
         return (current_value - self.theta) / self.eq_std
+    
+    def predict_next(self, current_value: float, horizon: int = 10) -> tuple:
+        if np.isnan(self.kappa) or np.isnan(self.theta):
+            return np.nan, np.nan, np.nan
+        # Continuous time projection: X_{t+h} = X_t*exp(-kappa*h) + theta*(1 - exp(-kappa*h))
+        exp_kh = np.exp(-self.kappa * horizon)
+        pred_spread = current_value * exp_kh + self.theta * (1 - exp_kh)
+        pred_change = pred_spread - current_value
+        pred_z = (pred_spread - self.theta) / self.eq_std
+        return float(pred_spread), float(pred_change), float(pred_z)
  
     @property
     def half_life(self) -> float:
@@ -146,7 +156,7 @@ class OUModel: # Baseline
             return np.inf
         return np.log(2.0) / self.kappa
  
-# Model 2 — OU + GARCH(1,1)
+# OU + GARCH(1,1)
 # Problem: constant eq_std means z=2 on a calm day ≠ z=2 on a volatile day.
 # To fix, fit GARCH(1,1) on AR(1) residuals → time-varying h_t.
 # z_t = (spread_t - θ) / √h_t
@@ -209,6 +219,26 @@ class OUGARCHModel:
         if h_next <= 0 or not np.isfinite(h_next):
             return np.nan
         return (current_value - self.ou.theta) / np.sqrt(h_next)
+    
+    def predict_next(self, current_value: float, horizon: int = 10) -> tuple:
+        if np.isnan(self.ou.kappa) or np.isnan(self.omega):
+            return np.nan, np.nan, np.nan
+        # Mean Projection X_{t+h} = X_t * exp(-kappa*h) + theta * (1 - exp(-kappa*h))
+        exp_kh = np.exp(-self.ou.kappa * horizon)
+        pred_spread = current_value * exp_kh + self.ou.theta * (1 - exp_kh)
+        pred_change = pred_spread - current_value
+        # Variance Projection, long-run (unconditional) variance
+        h_inf = self.omega / (1.0 - self.alpha_g - self.beta_g)
+        # One-step ahead variance h_{t+1}
+        h_t_plus_1 = self.omega + self.alpha_g * self._last_eps**2 + self.beta_g * self._last_h
+        # h-step ahead variance forecast
+        # E[h_{t+h}] = h_inf + (alpha + beta)^(h-1) * (h_{t+1} - h_inf)
+        persistence = self.alpha_g + self.beta_g
+        pred_var = h_inf + (persistence**(horizon - 1)) * (h_t_plus_1 - h_inf)
+        # Forecasted Z-score
+        # We use the square root of the projected variance for the horizon
+        pred_z = (pred_spread - self.ou.theta) / np.sqrt(pred_var) if pred_var > 0 else np.nan
+        return float(pred_spread), float(pred_change), float(pred_z)
  
     @property
     def half_life(self) -> float:
@@ -347,6 +377,29 @@ class RegimeSwitchingOU:
         z_raw      = (current_value - self.theta[0]) / self.eq_std[0]
         z_weighted = p_normal * z_raw
         return float(z_weighted), p_normal
+    
+    def predict_next(self, current_value: float, horizon: int = 10) -> tuple:
+        if not self.fitted or np.isnan(self.kappa).any():
+            return np.nan, np.nan, np.nan
+        # Compute h-step transition matrix: P^h, P^h gives the probability of being in state j at t+h given state i at t.
+        P_h = np.linalg.matrix_power(self.P_trans, horizon)
+        # Get current state probabilities (gamma from last fit) p_t = [P(state=0), P(state=1)]
+        p_t = self._last_gamma 
+        # Compute predicted state probabilities at t+h, p_{t+h} = p_t * P^h
+        p_future = p_t @ P_h
+        # Calculate regime-specific forecasts
+        pred_spread_regimes = np.zeros(self.N_STATES)
+        for k in range(self.N_STATES):
+            exp_kh = np.exp(-self.kappa[k] * horizon)
+            pred_spread_regimes[k] = current_value * exp_kh + self.theta[k] * (1 - exp_kh)
+        # Final weighted expectation (Law of Total Expectation)
+        pred_spread = np.sum(p_future * pred_spread_regimes)
+        pred_change = pred_spread - current_value
+        # Predicted Z-score (weighted by future regime probability)
+        # We focus on the "Normal" regime (State 0) for the Z-score logic
+        pred_z_raw = (pred_spread - self.theta[0]) / self.eq_std[0]
+        pred_z_weighted = p_future[0] * pred_z_raw
+        return float(pred_spread), float(pred_change), float(pred_z_weighted)
  
     @property
     def half_life(self) -> float:
@@ -404,6 +457,32 @@ class VECMModel:
             return np.nan
         ec = p1_current - self.beta_lr * p2_current
         return (ec - self.ec_mean) / self.ec_std
+    
+    def predict_next(self, p1_current: float, p2_current: float, horizon: int = 10) -> tuple:
+        # The EC term follows: Δec_t ≈ (α1 - β_lr*α2) * ec_{t-1}
+        if not self.fitted:
+            return np.nan, np.nan, np.nan
+        # Get Current Error Correction (Spread) value
+        curr_ec = p1_current - self.beta_lr * p2_current
+        # De-mean to get the raw deviation from equilibrium
+        deviation = curr_ec - self.ec_mean
+        # Combined speed of adjustment
+        # If alpha1 is negative and alpha2 is positive, they both pull the spread back.
+        alpha_net = self.alpha[0] - (self.beta_lr * self.alpha[1])
+        # Project deviation decay
+        # For a VECM(1), the deviation decays roughly as (1 + alpha_net)^horizon
+        # We ensure -1 < alpha_net < 0 for stability
+        if -1.0 < alpha_net < 0:
+            pred_deviation = deviation * ((1.0 + alpha_net) ** horizon)
+        else:
+            # Fallback to no-change if the system is unstable
+            pred_deviation = deviation
+        # Re-construct absolute spread and change
+        pred_spread = self.ec_mean + pred_deviation
+        pred_change = pred_spread - curr_ec
+        # Forecasted Z-score
+        pred_z = pred_deviation / self.ec_std
+        return float(pred_spread), float(pred_change), float(pred_z)
  
     @property
     def half_life(self) -> float:
@@ -421,12 +500,13 @@ class OUOrchestrator:
       3. Score spread[t] (out-of-sample) with each model
     No look-ahead: parameters fitted on [t-lookback, t-1], applied at t.
     """
-    def __init__(self, lookback: int = 60):
+    def __init__(self, lookback: int = 60, delta: int = 10):
         self.lookback = lookback
+        self.delta = delta
  
     def _resolve_tickers(self, pair_str: str, available: set) -> tuple | None:
         for i, ch in enumerate(pair_str):
-            if ch == "-":
+            if ch == "|":
                 s1, s2 = pair_str[:i], pair_str[i+1:]
                 if s1 in available and s2 in available:
                     return s1, s2
@@ -435,7 +515,7 @@ class OUOrchestrator:
     def run_walk_forward(self, log_price_df: pd.DataFrame, pairs_metadata: pd.DataFrame) -> pd.DataFrame:
         all_signals = []
         available   = set(log_price_df.columns)
-        eligible    = pairs_metadata[pairs_metadata["is_eligible"] == True]
+        eligible    = pairs_metadata[pairs_metadata["is_eligible"].astype(bool)]
  
         for _, meta in eligible.iterrows():
             tickers = self._resolve_tickers(str(meta["pair"]), available)
@@ -460,14 +540,16 @@ class OUOrchestrator:
                 window    = spread[t - self.lookback : t]
                 p1_window = p1_arr[t - self.lookback : t]
                 p2_window = p2_arr[t - self.lookback : t]
- 
                 row = {"date": dates[t], "pair": meta["pair"]}
  
                 # Baseline OU-AR(1)
                 if ou_model.fit(window):
                     z = ou_model.get_z_score(spread[t])
+                    p_spread, p_change, p_z = ou_model.predict_next(spread[t], self.delta)
                     if np.isfinite(z):
                         row["ou_z_score"]   = z
+                        row["ou_pred_change"] = p_change
+                        row["ou_pred_z"] = p_z
                         row["ou_kappa"]     = ou_model.kappa
                         row["ou_theta"]     = ou_model.theta
                         row["ou_half_life"] = ou_model.half_life
@@ -475,28 +557,38 @@ class OUOrchestrator:
                 # Baseline OU + GARCH(1,1)
                 if ou_garch.fit(window):
                     z = ou_garch.get_z_score(spread[t])
+                    p_spread, p_change, p_z = ou_garch.predict_next(spread[t], self.delta)
                     if np.isfinite(z):
                         row["garch_z_score"]   = z
                         row["garch_half_life"] = ou_garch.half_life
+                        row["garch_pred_change"] = p_change
+                        row["garch_pred_z"] = p_z
  
                 # Regime-switching OU
                 if rs_ou.fit(window):
                     z, p_normal = rs_ou.get_z_score(spread[t])
+                    p_spread, p_change, p_z = rs_ou.predict_next(spread[t], self.delta)
                     if np.isfinite(z):
                         row["rs_z_score"]      = z
                         row["rs_p_normal"]     = p_normal
                         row["rs_kappa_normal"] = rs_ou.kappa[0]
                         row["rs_half_life"]    = rs_ou.half_life
+                        row["rs_ou_pred_change"] = p_change
+                        row["rs_ou_pred_z"] = p_z
  
                 # VECM
                 if vecm_model.fit(p1_window, p2_window):
                     z = vecm_model.get_z_score(p1_arr[t], p2_arr[t])
+                    p_spread, p_change, p_z = vecm_model.predict_next(spread[t], self.delta)
                     if np.isfinite(z):
                         row["vecm_z_score"]   = z
                         row["vecm_alpha1"]    = vecm_model.alpha[0]
                         row["vecm_alpha2"]    = vecm_model.alpha[1]
                         row["vecm_beta_lr"]   = vecm_model.beta_lr
                         row["vecm_half_life"] = vecm_model.half_life
+                        row["vecm_pred_change"] = p_change
+                        row["vecm_pred_z"] = p_z
+ 
  
                 # Only emit if baseline OU produced a signal
                 if "ou_z_score" in row:
@@ -543,6 +635,10 @@ def run_ou_model():
  
         print(f"  Generating OOS signals ({val_start.date()} → {val_end.date()})...")
         signals     = orchestrator.run_walk_forward(val_prices, window_pairs)
+        if signals.empty:
+            print(f"  No valid signals generated for window {label} "
+                  f"(baseline OU fit produced 0 rows – check spreads/NaNs).")
+            continue
         oos_signals = signals[signals["date"] >= val_start]
  
         if not oos_signals.empty:
