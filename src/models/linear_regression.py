@@ -53,9 +53,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from src.config import DEFAULT_CONFIG
+from src.models.prediction_metrics import evaluate_regression_predictions
 
 # features pre-computed by pair_dataset_builder.py
 FEATURE_COLS = [
@@ -108,15 +108,19 @@ def directional_accuracy(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def compute_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
-    mse  = float(mean_squared_error(actual, predicted))
-    mae  = float(mean_absolute_error(actual, predicted))
-    rmse = float(np.sqrt(mse))
-    da   = directional_accuracy(actual, predicted)
+    metrics = evaluate_regression_predictions(actual, predicted)
+    da = metrics["directional_accuracy"]
+    r2 = metrics["r2"]
+    ic = metrics["information_coefficient"]
+    pw_da = metrics["profit_weighted_da"]
+
     return {
-        "mse":                  round(mse,  6),
-        "mae":                  round(mae,  6),
-        "rmse":                 round(rmse, 6),
-        "directional_accuracy": round(da,   4) if not np.isnan(da) else None,
+        "rmse":                   round(metrics["rmse"], 6),
+        "directional_accuracy":   round(da,   4) if not np.isnan(da) else None,
+        "r2":                     round(r2,   6) if not np.isnan(r2) else None,
+        "information_coefficient": round(ic,  4) if not np.isnan(ic) else None,
+        "profit_weighted_da":     round(pw_da, 4) if not np.isnan(pw_da) else None,
+        "directional_weighted_mse": round(metrics["directional_weighted_mse"], 6),
     }
 
 
@@ -362,7 +366,7 @@ def run_window(
         forecasts_df = pd.concat(window_forecasts, ignore_index = True).sort_values(
             ["eval_split", "pair", "Date"]).reset_index(drop = True)
         metrics_df = pd.DataFrame(window_metrics).sort_values(
-            ["eval_split", "mse", "pair"]).reset_index(drop = True)
+            ["eval_split", "rmse", "pair"]).reset_index(drop = True)
         save_window_outputs(output_root, window_label, forecasts_df, metrics_df)
 
     print(f"Modeled: {modeled} | Skipped: {skipped}")
@@ -420,20 +424,23 @@ def main() -> None:
 
         # save aggregated results
         if all_val_results:
-            pd.DataFrame(all_val_results).sort_values("mse").to_csv(
+            pd.DataFrame(all_val_results).sort_values("rmse").to_csv(
                 output_root / "all_val_results.csv", index = False)
             print(f"\nSaved: {output_root / 'all_val_results.csv'}")
 
         if all_test_results:
-            pd.DataFrame(all_test_results).sort_values("mse").to_csv(
+            pd.DataFrame(all_test_results).sort_values("rmse").to_csv(
                 output_root / "all_test_results.csv", index = False)
             print(f"Saved: {output_root / 'all_test_results.csv'}")
 
         # fold summary: average val metrics per window (for tuning comparison table)
         if all_val_results:
+            agg_cols = ["rmse", "directional_accuracy",
+                        "r2", "information_coefficient", "profit_weighted_da"]
+            agg_cols = [c for c in agg_cols if c in pd.DataFrame(all_val_results).columns]
             fold_summary = (
                 pd.DataFrame(all_val_results)
-                .groupby("window_label")[["mse", "mae", "rmse", "directional_accuracy"]]
+                .groupby("window_label")[agg_cols]
                 .mean()
                 .round(6)
                 .reset_index()

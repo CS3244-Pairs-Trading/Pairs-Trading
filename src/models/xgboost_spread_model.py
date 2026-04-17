@@ -39,9 +39,13 @@ import numpy as np
 import pandas as pd
 import shap
 import xgboost as xgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings("ignore")
+
+from .prediction_metrics import (
+    DEFAULT_DIRECTIONAL_MSE_GAMMA,
+    evaluate_regression_predictions,
+)
 
 # ── 11 input features — must match get_feature_columns() in feature_engineering.py ──
 FEATURE_NAMES: List[str] = [
@@ -61,6 +65,11 @@ FEATURE_NAMES: List[str] = [
 # Target column names — produced by feature_engineering.py / pair_dataset_builder.py
 TARGET_OLS    = "label_continuous_10d"   # spread_ols(t+10)    - spread_ols(t)
 TARGET_KALMAN = "label_kalman_10d"       # spread_kalman(t+10) - spread_kalman(t)
+
+# Z-scored targets: spread change / rolling_vol_20d  — puts all pairs on a
+# comparable scale and makes MSE naturally calibrated (~1.0 for a naive model)
+TARGET_OLS_ZSCORE    = "label_zscore_10d"          # (spread_ols(t+10) - spread_ols(t)) / vol
+TARGET_KALMAN_ZSCORE = "label_kalman_zscore_10d"   # (spread_kalman(t+10) - spread_kalman(t)) / vol
 
 # Spread columns for predicted_value derivation
 SPREAD_COL_OLS    = "spread_ols"
@@ -169,29 +178,24 @@ class SpreadChangeXGBoost:
 def evaluate_predictions(
     actual_change: np.ndarray,
     predicted_change: np.ndarray,
+    directional_mse_gamma: float = DEFAULT_DIRECTIONAL_MSE_GAMMA,
 ) -> Dict[str, float]:
     """
-    Compute all three evaluation metrics from MODEL_BRIEF.
+    Compute evaluation metrics for spread change predictions.
 
     Args:
         actual_change    : label_continuous_10d or label_kalman_10d  (n,)
         predicted_change : model output  (n,)
 
     Returns:
-        {"mse": float, "mae": float, "directional_accuracy": float}
+        dict with keys: rmse, directional_accuracy, r2,
+        information_coefficient, profit_weighted_da, directional_weighted_mse
     """
-    mse = float(mean_squared_error(actual_change, predicted_change))
-    mae = float(mean_absolute_error(actual_change, predicted_change))
-
-    nonzero = actual_change != 0
-    if nonzero.sum() > 0:
-        dir_acc = float(
-            np.mean(np.sign(predicted_change[nonzero]) == np.sign(actual_change[nonzero]))
-        )
-    else:
-        dir_acc = float("nan")
-
-    return {"mse": mse, "mae": mae, "directional_accuracy": dir_acc}
+    return evaluate_regression_predictions(
+        actual_change,
+        predicted_change,
+        gamma=directional_mse_gamma,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +266,8 @@ class XGBoostPipeline:
             n_estimators : [100, 200]
             learning_rate: [0.01, 0.05, 0.1]
 
-        Selects by lowest validation MSE.
+        Selects by the existing composite score, with directional-weighted MSE
+        used as a directional-risk tie-breaker.
 
         Returns:
             {"results_df": DataFrame, "best_params": dict}
@@ -274,8 +279,8 @@ class XGBoostPipeline:
         ))
 
         print(f"\n  Grid search ({len(combos)} combos) — {self.model_name}")
-        print(f"  {'depth':>5}  {'n_est':>5}  {'lr':>5}  {'val_mse':>10}  {'dir_acc':>8}")
-        print(f"  {'-'*45}")
+        print(f"  {'depth':>5}  {'n_est':>5}  {'lr':>5}  {'val_rmse':>10}  {'dw_mse':>10}  {'r2':>8}  {'dir_acc':>8}")
+        print(f"  {'-'*68}")
 
         rows = []
         for depth, n_est, lr in combos:
@@ -287,31 +292,45 @@ class XGBoostPipeline:
                 "max_depth":     depth,
                 "n_estimators":  n_est,
                 "learning_rate": lr,
-                "val_mse":       metrics["mse"],
-                "val_mae":       metrics["mae"],
+                "val_rmse":      metrics["rmse"],
+                "val_directional_weighted_mse": metrics["directional_weighted_mse"],
                 "val_dir_acc":   metrics["directional_accuracy"],
+                "val_r2":        metrics["r2"],
+                "val_ic":        metrics["information_coefficient"],
+                "val_pw_da":     metrics["profit_weighted_da"],
             })
             print(
-                f"  {depth:>5}  {n_est:>5}  {lr:>5.2f}  "
-                f"{metrics['mse']:>10.6f}  {metrics['directional_accuracy']:>8.3f}"
+                f"  {depth:>5}  {n_est:>5}  {lr:>5.02f}  "
+                f"{metrics['rmse']:>10.6f}  {metrics['directional_weighted_mse']:>10.6f}  "
+                f"{metrics['r2']:>8.4f}  "
+                f"{metrics['directional_accuracy']:>8.3f}"
             )
 
-        results_df = pd.DataFrame(rows).sort_values("val_mse").reset_index(drop=True)
+        # Select by composite score: 0.5 * R² + 0.5 * directional_accuracy
+        results_df = pd.DataFrame(rows)
+        results_df["composite_score"] = 0.5 * results_df["val_r2"] + 0.5 * results_df["val_dir_acc"]
+        results_df = results_df.sort_values(
+            ["composite_score", "val_directional_weighted_mse", "val_r2", "val_rmse"],
+            ascending=[False, True, False, True],
+        ).reset_index(drop=True)
         best_row   = results_df.iloc[0]
         best_params = {
             "max_depth":     int(best_row["max_depth"]),
             "n_estimators":  int(best_row["n_estimators"]),
             "learning_rate": float(best_row["learning_rate"]),
-            "val_mse":       float(best_row["val_mse"]),
-            "val_mae":       float(best_row["val_mae"]),
+            "val_rmse":      float(best_row["val_rmse"]),
+            "val_directional_weighted_mse": float(best_row["val_directional_weighted_mse"]),
             "val_dir_acc":   float(best_row["val_dir_acc"]),
+            "val_r2":        float(best_row["val_r2"]),
         }
 
         print(
             f"\n  Best: depth={best_params['max_depth']}  "
             f"n_est={best_params['n_estimators']}  "
             f"lr={best_params['learning_rate']}  "
-            f"val_mse={best_params['val_mse']:.6f}"
+            f"DW-MSE={best_params['val_directional_weighted_mse']:.6f}  "
+            f"R²={best_params['val_r2']:.4f}  "
+            f"DirAcc={best_params['val_dir_acc']:.3f}"
         )
         return {"results_df": results_df, "best_params": best_params}
 

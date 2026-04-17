@@ -34,6 +34,7 @@ def _write_predictions_csv(
     pair: str,
     predicted_values: list[float] | np.ndarray,
     predicted_changes: list[float] | np.ndarray | None = None,
+    predicted_z: list[float] | np.ndarray | None = None,
 ) -> None:
     out_dir = tmpdir / window_label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -44,13 +45,18 @@ def _write_predictions_csv(
         if predicted_changes is not None
         else np.zeros(len(dates), dtype=float)
     )
+    pred_z_arr = (
+        np.asarray(predicted_z, dtype=float)
+        if predicted_z is not None
+        else np.zeros(len(dates), dtype=float)
+    )
     df = pd.DataFrame(
         {
             "Date": dates,
             "pair": pair,
             "predicted_change": pred_changes_arr,
             "predicted_value": pred_vals,
-            "predicted_z": np.zeros(len(dates), dtype=float),
+            "predicted_z": pred_z_arr,
         }
     )
     df.to_csv(out_dir / "predictions.csv", index=False)
@@ -315,6 +321,78 @@ class TestSignalLogic:
         assert np.isfinite(signal._alpha_L)
         assert np.isfinite(signal._alpha_S)
         assert len(signals) == len(c1_test)
+
+    def test_kalman_auto_mode_uses_vol_normalized_scores(self, tmp_path):
+        beta = 1.0
+        pair = "A|B"
+        window = "test_window"
+
+        c1_train, c2_train = _make_price_pair(
+            [0.15, 0.18, 0.20, 0.17, 0.22, 0.21, 0.25, 0.24, 0.27, 0.29, 0.31, 0.30],
+            beta=beta,
+        )
+        c1_test, c2_test = _make_price_pair(
+            [0.28, 0.30, 0.32, 0.29, 0.31],
+            beta=beta,
+            start="2017-06-15",
+        )
+        spread_test = np.log(c1_test) - beta * np.log(c2_test)
+        pred_vals = spread_test + pd.Series([0.01, 0.03, 0.05, 0.01, -0.01], index=spread_test.index)
+        _write_predictions_csv(
+            tmp_path / "kalman_model",
+            window,
+            spread_test.index,
+            pair,
+            pred_vals.values,
+        )
+
+        signal = ForecastSignal(
+            tmp_path / "kalman_model",
+            horizon=2,
+            threshold_mode="decile",
+            spread_type="kalman",
+            warmup_days=2,
+            min_calibration_obs=1,
+        )
+        signal.fit(c1_train, c2_train, _make_stats(beta, pair, window))
+        signal.predict(c1_test, c2_test)
+
+        assert signal._resolved_score_mode() == "vol_normalized"
+        score_series = signal.get_score_series()
+        assert score_series is not None
+        assert np.isfinite(score_series.dropna()).all()
+
+    def test_reentry_cooldown_blocks_immediate_reentry(self, tmp_path):
+        beta = 1.0
+        pair = "A|B"
+        window = "test_window"
+
+        c1_train, c2_train = _make_price_pair(
+            [0.30, 0.35, 0.40, 0.32, 0.45, 0.38, 0.50, 0.42],
+            beta=beta,
+        )
+        c1_test, c2_test = _make_price_pair(
+            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            beta=beta,
+            start="2017-07-03",
+        )
+        spread_test = np.log(c1_test) - beta * np.log(c2_test)
+        pred_vals = spread_test + pd.Series([0.01, 0.03, 0.05, -0.01, 0.05, 0.05], index=spread_test.index)
+        _write_predictions_csv(tmp_path, window, spread_test.index, pair, pred_vals.values)
+
+        signal = ForecastSignal(
+            tmp_path,
+            horizon=2,
+            threshold_mode="decile",
+            warmup_days=2,
+            min_calibration_obs=1,
+            entry_scale=1.2,
+            reentry_cooldown_days=1,
+        )
+        signal.fit(c1_train, c2_train, _make_stats(beta, pair, window))
+        signals = signal.predict(c1_test, c2_test)
+
+        assert list(signals.astype(int)) == [0, 0, 1, 0, 0, 1]
 
 
 class TestPredictionLoading:

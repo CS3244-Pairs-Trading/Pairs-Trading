@@ -32,6 +32,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.config import DEFAULT_CONFIG
+from src.models.prediction_metrics import evaluate_regression_predictions
 
 warnings.filterwarnings("ignore")
 
@@ -405,19 +406,17 @@ def predict(
 
 
 def compute_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
-    """Compute MSE, MAE, RMSE and directional accuracy on cumulative change."""
-    diff = predicted - actual
-    mse = float(np.mean(diff**2))
-    mae = float(np.mean(np.abs(diff)))
-    rmse = float(np.sqrt(mse))
+    """Compute RMSE, directional accuracy, R², IC, profit-weighted DA, DW-MSE on cumulative change."""
+    metrics = evaluate_regression_predictions(actual, predicted)
 
-    nonzero = actual != 0
-    if int(nonzero.sum()) > 0:
-        dir_acc = float(np.mean(np.sign(predicted[nonzero]) == np.sign(actual[nonzero])))
-    else:
-        dir_acc = float("nan")
-
-    return {"mse": mse, "mae": mae, "rmse": rmse, "dir_acc": dir_acc}
+    return {
+        "rmse": metrics["rmse"],
+        "dir_acc": metrics["directional_accuracy"],
+        "r2": metrics["r2"],
+        "information_coefficient": metrics["information_coefficient"],
+        "profit_weighted_da": metrics["profit_weighted_da"],
+        "directional_weighted_mse": metrics["directional_weighted_mse"],
+    }
 
 
 def tune_hyperparameters(
@@ -447,7 +446,7 @@ def tune_hyperparameters(
 
     rows: list[dict[str, Any]] = []
     for hidden_size, window_size, learning_rate in grid:
-        fold_mses: list[float] = []
+        fold_metrics: list[dict[str, float]] = []
         fold_count = 0
         if verbose:
             print(
@@ -516,33 +515,56 @@ def tune_hyperparameters(
             pred_seq = pred_seq_n * tgt_std + tgt_mu
             pred_cum = pred_seq.sum(axis=1)
             actual_cum = val_samples["y_final"]
-            mse = float(np.mean((pred_cum - actual_cum) ** 2))
 
-            fold_mses.append(mse)
+            metrics = compute_metrics(actual_cum, pred_cum)
+            fold_metrics.append(metrics)
             fold_count += 1
             if verbose:
                 print(
-                    f"    Fold {fold.label}: val_mse={mse:.6f} "
+                    f"    Fold {fold.label}: RMSE={metrics['rmse']:.6f}  "
+                    f"R²={metrics['r2']:.4f}  DirAcc={metrics['dir_acc']:.3f}  "
                     f"(train={len(X_train)}, val={len(X_val)})"
                 )
 
-        avg_mse = float(np.mean(fold_mses)) if fold_mses else float("inf")
-        std_mse = float(np.std(fold_mses)) if fold_mses else float("nan")
+        if fold_metrics:
+            avg_rmse = float(np.mean([m["rmse"] for m in fold_metrics]))
+            avg_dw_mse = float(np.mean([m["directional_weighted_mse"] for m in fold_metrics]))
+            avg_r2 = float(np.mean([m["r2"] for m in fold_metrics]))
+            avg_dir_acc = float(np.mean([m["dir_acc"] for m in fold_metrics]))
+            std_rmse = float(np.std([m["rmse"] for m in fold_metrics]))
+        else:
+            avg_rmse = float("inf")
+            avg_dw_mse = float("inf")
+            avg_r2 = float("-inf")
+            avg_dir_acc = 0.0
+            std_rmse = float("nan")
+
+        composite = 0.5 * avg_r2 + 0.5 * avg_dir_acc
+
         rows.append(
             {
                 "hidden_size": int(hidden_size),
                 "window_size": int(window_size),
                 "learning_rate": float(learning_rate),
                 "horizon": int(horizon),
-                "avg_val_mse": avg_mse,
-                "std_val_mse": std_mse,
+                "avg_val_rmse": avg_rmse,
+                "avg_val_directional_weighted_mse": avg_dw_mse,
+                "avg_val_r2": avg_r2,
+                "avg_val_dir_acc": avg_dir_acc,
+                "composite_score": composite,
+                "std_val_rmse": std_rmse,
                 "n_folds": int(fold_count),
             }
         )
         if verbose:
-            print(f"    Avg val MSE: {avg_mse:.6f} ({fold_count} folds)")
+            print(f"    Avg RMSE={avg_rmse:.6f}  R²={avg_r2:.4f}  "
+                  f"DirAcc={avg_dir_acc:.3f}  Composite={composite:.4f}  "
+                  f"({fold_count} folds)")
 
-    results_df = pd.DataFrame(rows).sort_values("avg_val_mse").reset_index(drop=True)
+    results_df = pd.DataFrame(rows).sort_values(
+        ["composite_score", "avg_val_directional_weighted_mse", "avg_val_rmse"],
+        ascending=[False, True, True],
+    ).reset_index(drop=True)
     best_row = results_df.iloc[0]
     if verbose:
         print(f"\n{'='*60}")
@@ -552,7 +574,10 @@ def tune_hyperparameters(
             f"\nBest: hidden={int(best_row['hidden_size'])}, "
             f"window={int(best_row['window_size'])}, "
             f"lr={float(best_row['learning_rate'])}, "
-            f"avg_mse={float(best_row['avg_val_mse']):.6f}"
+            f"DW-MSE={float(best_row['avg_val_directional_weighted_mse']):.6f}, "
+            f"R²={float(best_row['avg_val_r2']):.4f}, "
+            f"DirAcc={float(best_row['avg_val_dir_acc']):.3f}, "
+            f"Composite={float(best_row['composite_score']):.4f}"
         )
         print(f"{'='*60}")
 
@@ -560,7 +585,8 @@ def tune_hyperparameters(
         "hidden_size": int(best_row["hidden_size"]),
         "window_size": int(best_row["window_size"]),
         "learning_rate": float(best_row["learning_rate"]),
-        "avg_val_mse": float(best_row["avg_val_mse"]),
+        "avg_val_rmse": float(best_row["avg_val_rmse"]),
+        "avg_val_directional_weighted_mse": float(best_row["avg_val_directional_weighted_mse"]),
         "tuning_results": results_df,
     }
 
@@ -685,17 +711,16 @@ def run_predictions_for_window(
     metrics = compute_metrics(actual_cum, pred_cum)
     if verbose:
         print(
-            f"  [{window_label}] MSE={metrics['mse']:.6f}, "
-            f"MAE={metrics['mae']:.6f}, RMSE={metrics['rmse']:.6f}, "
+            f"  [{window_label}] RMSE={metrics['rmse']:.6f}, "
+            f"DW-MSE={metrics['directional_weighted_mse']:.6f}, "
             f"DirAcc={metrics['dir_acc']:.3f}"
         )
         print(f"  [{window_label}] Saved predictions -> {out_dir / 'predictions.csv'}")
 
     row: dict[str, Any] = {
         "window": window_label,
-        "mse": metrics["mse"],
-        "mae": metrics["mae"],
         "rmse": metrics["rmse"],
+        "directional_weighted_mse": metrics["directional_weighted_mse"],
         "dir_acc": metrics["dir_acc"],
         "n_train": int(len(X_train)),
         "hidden_size": int(hidden_size),
@@ -840,9 +865,8 @@ def run_lstm_encoder_decoder_pipeline(
             summary_df.to_csv(model_dir / "metrics_summary.csv", index=False)
             print(f"\nSummary saved: {model_dir / 'metrics_summary.csv'}")
             print(
-                f"Avg MSE={summary_df['mse'].mean():.6f}, "
-                f"Avg MAE={summary_df['mae'].mean():.6f}, "
                 f"Avg RMSE={summary_df['rmse'].mean():.6f}, "
+                f"Avg DW-MSE={summary_df['directional_weighted_mse'].mean():.6f}, "
                 f"Avg DirAcc={summary_df['dir_acc'].mean():.3f}"
             )
         else:

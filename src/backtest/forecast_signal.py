@@ -41,6 +41,16 @@ def _scaled_change(
     return (delta / safe_base) * 100.0
 
 
+def _rolling_vol(
+    spread: pd.Series,
+    lookback: int = 20,
+    min_periods: int = 10,
+    floor: float = 1e-8,
+) -> pd.Series:
+    vol = spread.diff().rolling(lookback, min_periods=min_periods).std()
+    return vol.clip(lower=floor)
+
+
 class ForecastSignal:
     """
     Forecast-driven signal with causal threshold calibration.
@@ -60,10 +70,13 @@ class ForecastSignal:
         horizon: int = 10,
         threshold_mode: str = "decile",
         spread_type: str | None = None,
+        score_mode: str = "auto",
         min_abs_spread: float = 1e-6,
         spread_floor_quantile: float = 0.25,
         warmup_days: int = 30,
         min_calibration_obs: int = 10,
+        entry_scale: float = 1.0,
+        reentry_cooldown_days: int = 0,
     ) -> None:
         if threshold_mode not in ("decile", "quintile"):
             raise ValueError(
@@ -82,15 +95,30 @@ class ForecastSignal:
             raise ValueError(
                 f"min_calibration_obs must be >= 1, got '{min_calibration_obs}'"
             )
+        if score_mode not in {"auto", "percent_spread", "predicted_z", "vol_normalized"}:
+            raise ValueError(
+                "score_mode must be one of "
+                "{'auto', 'percent_spread', 'predicted_z', 'vol_normalized'}, "
+                f"got '{score_mode}'"
+            )
+        if entry_scale < 1.0:
+            raise ValueError(f"entry_scale must be >= 1.0, got '{entry_scale}'")
+        if reentry_cooldown_days < 0:
+            raise ValueError(
+                f"reentry_cooldown_days must be >= 0, got '{reentry_cooldown_days}'"
+            )
 
         self.predictions_root = Path(predictions_root)
         self.horizon = horizon
         self.threshold_mode = threshold_mode
         self.spread_type = _infer_spread_type(self.predictions_root, spread_type)
+        self.score_mode = score_mode
         self.min_abs_spread = float(min_abs_spread)
         self.spread_floor_quantile = float(spread_floor_quantile)
         self.warmup_days = int(warmup_days)
         self.min_calibration_obs = int(min_calibration_obs)
+        self.entry_scale = float(entry_scale)
+        self.reentry_cooldown_days = int(reentry_cooldown_days)
 
         self._alpha_L: float = 0.01
         self._alpha_S: float = -0.01
@@ -99,10 +127,14 @@ class ForecastSignal:
         self._beta: float = 1.0
         self._predicted_values: Optional[pd.Series] = None
         self._predicted_changes: Optional[pd.Series] = None
+        self._predicted_zscores: Optional[pd.Series] = None
         self._train_c1: Optional[pd.Series] = None
         self._train_c2: Optional[pd.Series] = None
+        self._train_spread: Optional[pd.Series] = None
+        self._train_vol: Optional[pd.Series] = None
         self._execution_beta: float | pd.Series | None = None
         self._scale_floor: float = self.min_abs_spread
+        self._last_score_series: Optional[pd.Series] = None
 
         self._window_cache: dict[str, Optional[pd.DataFrame]] = {}
 
@@ -145,6 +177,14 @@ class ForecastSignal:
 
     def get_execution_beta(self) -> float | pd.Series | None:
         return self._execution_beta
+
+    def get_score_series(self) -> Optional[pd.Series]:
+        return self._last_score_series
+
+    def _resolved_score_mode(self) -> str:
+        if self.score_mode != "auto":
+            return self.score_mode
+        return "vol_normalized" if self.spread_type == "kalman" else "percent_spread"
 
     def _build_spread(
         self,
@@ -204,6 +244,46 @@ class ForecastSignal:
         floor = float(ref.quantile(self.spread_floor_quantile))
         return max(floor, self.min_abs_spread)
 
+    def _build_training_scores(
+        self,
+        spread_train: pd.Series,
+    ) -> pd.Series:
+        base_train = spread_train.shift(self.horizon)
+        delta_train = spread_train - base_train
+        mode = self._resolved_score_mode()
+        if mode == "percent_spread":
+            return _scaled_change(delta_train, base_train, self._scale_floor)
+
+        vol_train = _rolling_vol(spread_train, floor=self.min_abs_spread)
+        return delta_train / vol_train
+
+    def _build_forecast_scores(
+        self,
+        spread_test: pd.Series,
+        delta_raw: pd.Series,
+        predicted_z: Optional[pd.Series],
+    ) -> pd.Series:
+        mode = self._resolved_score_mode()
+        if mode == "percent_spread":
+            return _scaled_change(delta_raw, spread_test, self._scale_floor).replace(
+                [np.inf, -np.inf],
+                np.nan,
+            )
+        if mode == "predicted_z":
+            if predicted_z is not None:
+                return predicted_z.astype(float)
+            mode = "vol_normalized"
+
+        if self._train_spread is None:
+            vol = _rolling_vol(spread_test, floor=self.min_abs_spread)
+            return delta_raw / vol
+
+        full_spread = pd.concat([self._train_spread, spread_test]).sort_index()
+        full_spread = full_spread[~full_spread.index.duplicated(keep="last")]
+        full_vol = _rolling_vol(full_spread, floor=self.min_abs_spread)
+        vol_test = full_vol.reindex(spread_test.index)
+        return delta_raw / vol_test
+
     def _thresholds_from_scores(self, scores: pd.Series) -> tuple[float, float]:
         scores = scores.replace([np.inf, -np.inf], np.nan).dropna()
         if scores.empty:
@@ -260,15 +340,11 @@ class ForecastSignal:
         self._train_c1 = c1_train.sort_index()
         self._train_c2 = c2_train.sort_index()
         self._execution_beta = beta
-        self._scale_floor = self._fit_scale_floor(c1_train, c2_train)
-
         spread_train, _ = self._build_spread(c1_train, c2_train)
-        base_train = spread_train.shift(self.horizon)
-        train_scores = _scaled_change(
-            spread_train - base_train,
-            base_train,
-            self._scale_floor,
-        )
+        self._train_spread = spread_train
+        self._train_vol = _rolling_vol(spread_train, floor=self.min_abs_spread)
+        self._scale_floor = self._fit_scale_floor(c1_train, c2_train)
+        train_scores = self._build_training_scores(spread_train)
         self._fallback_alpha_L, self._fallback_alpha_S = self._thresholds_from_scores(
             train_scores
         )
@@ -279,12 +355,14 @@ class ForecastSignal:
         if df is None:
             self._predicted_values = None
             self._predicted_changes = None
+            self._predicted_zscores = None
             return
 
         sub = df.loc[df["pair"] == pair]
         if sub.empty:
             self._predicted_values = None
             self._predicted_changes = None
+            self._predicted_zscores = None
             return
 
         if "predicted_value" in sub.columns:
@@ -304,6 +382,15 @@ class ForecastSignal:
             )
         else:
             self._predicted_changes = None
+
+        if "predicted_z" in sub.columns:
+            self._predicted_zscores = (
+                sub.dropna(subset=["predicted_z"])
+                .set_index("Date")["predicted_z"]
+                .sort_index()
+            )
+        else:
+            self._predicted_zscores = None
 
     def predict(
         self,
@@ -331,10 +418,15 @@ class ForecastSignal:
         elif self._predicted_changes is not None and not self._predicted_changes.empty:
             delta_from_change = self._predicted_changes.reindex(c1_test.index).astype(float)
             delta_raw = delta_from_change
-        delta_score = _scaled_change(delta_raw, current_spread, self._scale_floor).replace(
-            [np.inf, -np.inf],
-            np.nan,
-        )
+        predicted_z = None
+        if self._predicted_zscores is not None and not self._predicted_zscores.empty:
+            predicted_z = self._predicted_zscores.reindex(c1_test.index).astype(float)
+        delta_score = self._build_forecast_scores(
+            current_spread,
+            delta_raw,
+            predicted_z,
+        ).replace([np.inf, -np.inf], np.nan)
+        self._last_score_series = delta_score
 
         warmup_end = min(self.warmup_days, n)
         warmup_scores = delta_score.iloc[:warmup_end]
@@ -346,6 +438,9 @@ class ForecastSignal:
 
         pos = 0
         age = 0
+        cooldown = 0
+        alpha_entry_l = self._alpha_L * self.entry_scale
+        alpha_entry_s = self._alpha_S * self.entry_scale
 
         for i in range(n):
             if i < warmup_end:
@@ -361,6 +456,7 @@ class ForecastSignal:
                     if age >= self.horizon:
                         pos = 0
                         age = 0
+                        cooldown = self.reentry_cooldown_days
                 sig_arr[i] = pos
                 continue
 
@@ -368,14 +464,24 @@ class ForecastSignal:
             score_i = float(score_i)
 
             if pos == 0:
-                if score_i >= self._alpha_L:
+                if cooldown > 0:
+                    cooldown -= 1
+                elif score_i >= alpha_entry_l:
                     pos = 1
                     age = 0
-                elif score_i <= self._alpha_S:
+                elif score_i <= alpha_entry_s:
                     pos = -1
                     age = 0
             else:
                 age += 1
+
+                # Opposite-sign forecast invalidates the current position.
+                if (pos == 1 and score_i < 0.0) or (pos == -1 and score_i > 0.0):
+                    pos = 0
+                    age = 0
+                    cooldown = self.reentry_cooldown_days
+                    sig_arr[i] = pos
+                    continue
 
                 # Mandatory hold: do NOT exit before the forecast horizon.
                 # The model predicts a `horizon`-day change — daily noise in
@@ -392,6 +498,7 @@ class ForecastSignal:
                     else:
                         pos = 0  # signal faded → exit to flat
                         age = 0
+                        cooldown = self.reentry_cooldown_days
 
             sig_arr[i] = pos
 
@@ -400,6 +507,7 @@ class ForecastSignal:
     def __repr__(self) -> str:
         return (
             f"ForecastSignal("
-            f"mode={self.threshold_mode}, horizon={self.horizon}, warmup={self.warmup_days}, "
+            f"mode={self.threshold_mode}, score_mode={self._resolved_score_mode()}, "
+            f"horizon={self.horizon}, warmup={self.warmup_days}, "
             f"alpha_L={self._alpha_L:.5f}, alpha_S={self._alpha_S:.5f})"
         )

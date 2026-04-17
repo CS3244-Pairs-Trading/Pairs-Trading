@@ -88,6 +88,9 @@ def _simulate_pair_mode(
     mode: str,
     warmup_days: int,
     allocation: float,
+    score_mode: str,
+    entry_scale: float,
+    reentry_cooldown_days: int,
     active_start: int = 0,
     active_end: int | None = None,
 ) -> dict:
@@ -96,6 +99,9 @@ def _simulate_pair_mode(
         horizon=horizon,
         threshold_mode=mode,
         warmup_days=warmup_days,
+        score_mode=score_mode,
+        entry_scale=entry_scale,
+        reentry_cooldown_days=reentry_cooldown_days,
     )
     stats = _spread_stats(job["tr1"], job["tr2"], job["beta"])
     stats["pair"] = job["pair"]
@@ -127,6 +133,7 @@ def _simulate_pair_mode(
     return {
         "signals": exec_signals,
         "raw_signals": signals,
+        "score_series": signal.get_score_series(),
         "beta_exec": beta_exec,
         "pnl": pnl,
         "tv": tv,
@@ -218,6 +225,9 @@ def _evaluate_qualified_window(
     warmup_days: int,
     qualification_days: int,
     max_live_pairs: int,
+    score_mode: str,
+    entry_scale: float,
+    reentry_cooldown_days: int,
     forced_mode: str | None,
     default_mode: str,
 ) -> tuple[dict, pd.DataFrame, int, int]:
@@ -247,6 +257,9 @@ def _evaluate_qualified_window(
         horizon=horizon,
         threshold_mode="decile",
         warmup_days=warmup_days,
+        score_mode=score_mode,
+        entry_scale=entry_scale,
+        reentry_cooldown_days=reentry_cooldown_days,
     )
 
     tradable_jobs: list[dict] = []
@@ -287,6 +300,9 @@ def _evaluate_qualified_window(
                 mode,
                 warmup_days,
                 selection_allocation,
+                score_mode,
+                entry_scale,
+                reentry_cooldown_days,
                 active_start=warmup_used,
                 active_end=qualification_end if qualification_days > 0 else None,
             )
@@ -304,6 +320,9 @@ def _evaluate_qualified_window(
                 "alpha_S": qual_run["alpha_S"],
                 "warmup_used": warmup_used,
                 "qualification_end_idx": qualification_end,
+                "score_mode": score_mode,
+                "entry_scale": entry_scale,
+                "reentry_cooldown_days": reentry_cooldown_days,
             }
 
             better = False
@@ -365,6 +384,9 @@ def _evaluate_qualified_window(
             item["mode"],
             warmup_days,
             live_allocation,
+            score_mode,
+            entry_scale,
+            reentry_cooldown_days,
             active_start=item["live_start"],
         )
         live_run["pair"] = item["job"]["pair"]
@@ -417,6 +439,9 @@ def tune_strategy_parameters(
     warmup_candidates: list[int],
     qualification_candidates: list[int],
     max_live_pair_candidates: list[int],
+    score_mode: str,
+    entry_scale_candidates: list[float],
+    reentry_cooldown_candidates: list[int],
 ) -> tuple[dict, pd.DataFrame]:
     predictions_root = PROJECT_ROOT / "data" / "processed" / "predictions" / model_name
     engine = BacktestEngine(cfg)
@@ -427,56 +452,72 @@ def tune_strategy_parameters(
     for warmup_days in warmup_candidates:
         for qualification_days in qualification_candidates:
             for max_live_pairs in max_live_pair_candidates:
-                fold_rows: list[dict] = []
-                for fold in DEFAULT_CONFIG.expanding_folds:
-                    res, _, _, _ = _evaluate_qualified_window(
-                        engine=engine,
-                        predictions_root=predictions_root,
-                        cfg=cfg,
-                        window_label=fold.label,
-                        train_end=fold.train.end,
-                        test_start=fold.val.start,
-                        test_end=fold.val.end,
-                        horizon=horizon,
-                        warmup_days=warmup_days,
-                        qualification_days=qualification_days,
-                        max_live_pairs=max_live_pairs,
-                        forced_mode=None,
-                        default_mode=default_mode,
-                    )
-                    if not res:
-                        continue
-                    metrics = res["metrics"]
-                    fold_rows.append(
-                        {
-                            "window": fold.label,
-                            "total_return": metrics["total_return"],
-                            "sharpe": metrics["sharpe"],
-                            "fitness": metrics["fitness"],
-                            "turnover": metrics["turnover"],
-                            "n_trades": metrics["n_trades"],
-                            "live_pairs": res["n_pairs"],
-                        }
-                    )
+                for entry_scale in entry_scale_candidates:
+                    for reentry_cooldown_days in reentry_cooldown_candidates:
+                        fold_rows: list[dict] = []
+                        for fold in DEFAULT_CONFIG.expanding_folds:
+                            res, _, _, _ = _evaluate_qualified_window(
+                                engine=engine,
+                                predictions_root=predictions_root,
+                                cfg=cfg,
+                                window_label=fold.label,
+                                train_end=fold.train.end,
+                                test_start=fold.val.start,
+                                test_end=fold.val.end,
+                                horizon=horizon,
+                                warmup_days=warmup_days,
+                                qualification_days=qualification_days,
+                                max_live_pairs=max_live_pairs,
+                                score_mode=score_mode,
+                                entry_scale=entry_scale,
+                                reentry_cooldown_days=reentry_cooldown_days,
+                                forced_mode=None,
+                                default_mode=default_mode,
+                            )
+                            if not res:
+                                continue
+                            metrics = res["metrics"]
+                            fold_rows.append(
+                                {
+                                    "window": fold.label,
+                                    "total_return": metrics["total_return"],
+                                    "sharpe": metrics["sharpe"],
+                                    "fitness": metrics["fitness"],
+                                    "turnover": metrics["turnover"],
+                                    "n_trades": metrics["n_trades"],
+                                    "live_pairs": res["n_pairs"],
+                                }
+                            )
 
-                if not fold_rows:
-                    continue
+                        if not fold_rows:
+                            continue
 
-                fold_df = pd.DataFrame(fold_rows)
-                rows.append(
-                    {
-                        "warmup_days": warmup_days,
-                        "qualification_days": qualification_days,
-                        "max_live_pairs": max_live_pairs,
-                        "n_folds": len(fold_df),
-                        "mean_return": float(fold_df["total_return"].mean()),
-                        "mean_sharpe": float(fold_df["sharpe"].mean()),
-                        "mean_fitness": float(fold_df["fitness"].mean()),
-                        "mean_turnover": float(fold_df["turnover"].mean()),
-                        "mean_live_pairs": float(fold_df["live_pairs"].mean()),
-                        "total_trades": int(fold_df["n_trades"].sum()),
-                    }
-                )
+                        fold_df = pd.DataFrame(fold_rows)
+                        rows.append(
+                            {
+                                "warmup_days": warmup_days,
+                                "qualification_days": qualification_days,
+                                "max_live_pairs": max_live_pairs,
+                                "entry_scale": entry_scale,
+                                "reentry_cooldown_days": reentry_cooldown_days,
+                                "score_mode": score_mode,
+                                "n_folds": len(fold_df),
+                                "mean_return": float(fold_df["total_return"].mean()),
+                                "mean_sharpe": float(fold_df["sharpe"].mean()),
+                                "mean_fitness": float(fold_df["fitness"].mean()),
+                                "mean_turnover": float(fold_df["turnover"].mean()),
+                                "median_return": float(fold_df["total_return"].median()),
+                                "median_sharpe": float(fold_df["sharpe"].median()),
+                                "median_fitness": float(fold_df["fitness"].median()),
+                                "recent_return": float(fold_df.iloc[-1]["total_return"]),
+                                "recent_sharpe": float(fold_df.iloc[-1]["sharpe"]),
+                                "recent_fitness": float(fold_df.iloc[-1]["fitness"]),
+                                "positive_return_folds": int((fold_df["total_return"] > 0.0).sum()),
+                                "positive_sharpe_folds": int((fold_df["sharpe"] > 0.0).sum()),
+                                "mean_live_pairs": float(fold_df["live_pairs"].mean()),
+                                "total_trades": int(fold_df["n_trades"].sum()),
+                            }
+                        )
 
     tuning_df = pd.DataFrame(rows)
     if tuning_df.empty:
@@ -484,12 +525,22 @@ def tune_strategy_parameters(
             "warmup_days": warmup_candidates[0],
             "qualification_days": qualification_candidates[0],
             "max_live_pairs": max_live_pair_candidates[0],
+            "entry_scale": entry_scale_candidates[0],
+            "reentry_cooldown_days": reentry_cooldown_candidates[0],
         }
         return fallback, tuning_df
 
     tuning_df.sort_values(
-        ["mean_return", "mean_sharpe", "mean_fitness", "mean_turnover"],
-        ascending=[False, False, False, True],
+        [
+            "recent_sharpe",
+            "recent_fitness",
+            "median_sharpe",
+            "mean_fitness",
+            "mean_sharpe",
+            "mean_return",
+            "mean_turnover",
+        ],
+        ascending=[False, False, False, False, False, False, True],
         inplace=True,
     )
     tuning_df.reset_index(drop=True, inplace=True)
@@ -503,6 +554,8 @@ def tune_strategy_parameters(
         "warmup_days": int(best["warmup_days"]),
         "qualification_days": int(best["qualification_days"]),
         "max_live_pairs": int(best["max_live_pairs"]),
+        "entry_scale": float(best["entry_scale"]),
+        "reentry_cooldown_days": int(best["reentry_cooldown_days"]),
     }
     return best_params, tuning_df
 
@@ -512,6 +565,9 @@ def run_validation_sweep(
     cfg: BacktestConfig,
     horizon: int = 10,
     warmup_days: int = 30,
+    score_mode: str = "auto",
+    entry_scale: float = 1.0,
+    reentry_cooldown_days: int = 0,
 ) -> pd.DataFrame:
     predictions_root = PROJECT_ROOT / "data" / "processed" / "predictions" / model_name
     if not predictions_root.exists():
@@ -561,6 +617,9 @@ def run_validation_sweep(
             horizon=horizon,
             threshold_mode="decile",
             warmup_days=warmup_days,
+            score_mode=score_mode,
+            entry_scale=entry_scale,
+            reentry_cooldown_days=reentry_cooldown_days,
         )
 
         tradable_jobs: list[dict] = []
@@ -593,6 +652,9 @@ def run_validation_sweep(
                     mode,
                     warmup_days,
                     allocation,
+                    score_mode,
+                    entry_scale,
+                    reentry_cooldown_days,
                 )
                 row_result[f"pnl_{mode}"] = float(run["pnl"].sum())
                 row_result[f"alpha_L_{mode}"] = run["alpha_L"]
@@ -668,6 +730,9 @@ def run_holdout(
     warmup_days: int = 30,
     qualification_days: int = 30,
     max_live_pairs: int = 5,
+    score_mode: str = "auto",
+    entry_scale: float = 1.0,
+    reentry_cooldown_days: int = 0,
     forced_mode: str | None = None,
     default_mode: str = "decile",
     sweep_df: pd.DataFrame | None = None,
@@ -685,6 +750,9 @@ def run_holdout(
     print(f"{'═' * 60}")
     print(f"  Warmup days:       {warmup_days}")
     print(f"  Qualification days:{qualification_days}")
+    print(f"  Score mode:        {score_mode}")
+    print(f"  Entry scale:       {entry_scale:.2f}")
+    print(f"  Cooldown days:     {reentry_cooldown_days}")
     if forced_mode is not None:
         print(f"  Mode policy:       forced {forced_mode}")
     else:
@@ -713,6 +781,9 @@ def run_holdout(
         warmup_days=warmup_days,
         qualification_days=qualification_days,
         max_live_pairs=max_live_pairs,
+        score_mode=score_mode,
+        entry_scale=entry_scale,
+        reentry_cooldown_days=reentry_cooldown_days,
         forced_mode=forced_mode,
         default_mode=default_mode,
     )
@@ -754,6 +825,9 @@ def run_holdout(
     metrics_df["warmup_days"] = warmup_days
     metrics_df["qualification_days"] = qualification_days
     metrics_df["max_live_pairs"] = max_live_pairs
+    metrics_df["score_mode"] = score_mode
+    metrics_df["entry_scale"] = entry_scale
+    metrics_df["reentry_cooldown_days"] = reentry_cooldown_days
     metrics_df["live_pairs"] = live_pairs
     metrics_df.to_csv(out_dir / "holdout_metrics.csv", index=False)
     print(f"  Saved metrics: {out_dir / 'holdout_metrics.csv'}")
@@ -823,6 +897,25 @@ def main() -> None:
         action="store_true",
         help="Skip validation-based tuning of warmup/qualification/live-pair parameters",
     )
+    parser.add_argument(
+        "--score_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "percent_spread", "predicted_z", "vol_normalized"],
+        help="How forecast scores are normalized before thresholding",
+    )
+    parser.add_argument(
+        "--entry_scale",
+        type=float,
+        default=1.0,
+        help="Entry threshold multiplier (>1 makes entries more selective)",
+    )
+    parser.add_argument(
+        "--reentry_cooldown_days",
+        type=int,
+        default=0,
+        help="Days to wait after an exit before re-entering the same pair",
+    )
     args = parser.parse_args()
 
     cfg = BacktestConfig(n_top_pairs=args.n_pairs)
@@ -832,6 +925,9 @@ def main() -> None:
         cfg,
         horizon=args.horizon,
         warmup_days=args.warmup_days,
+        score_mode=args.score_mode,
+        entry_scale=args.entry_scale,
+        reentry_cooldown_days=args.reentry_cooldown_days,
     )
     if sweep_df.empty:
         print("[ERROR] Validation sweep produced no results. Exiting.")
@@ -844,18 +940,26 @@ def main() -> None:
         warmup_days = args.warmup_days
         qualification_days = args.qualification_days
         max_live_pairs = args.max_live_pairs
+        entry_scale = args.entry_scale
+        reentry_cooldown_days = args.reentry_cooldown_days
 
         if not args.no_strategy_tune:
-            warmup_grid = [args.warmup_days] if args.warmup_days != 30 else [20, 30]
+            warmup_grid = [args.warmup_days] if args.warmup_days != 30 else [30]
             qualification_grid = (
                 [args.qualification_days]
                 if args.qualification_days != 30
-                else [20, 30, 40]
+                else [30, 40]
             )
             max_live_pair_grid = (
                 [args.max_live_pairs]
                 if args.max_live_pairs != 5
                 else [3, 5]
+            )
+            entry_scale_grid = [args.entry_scale] if args.entry_scale != 1.0 else [1.0, 1.25]
+            cooldown_grid = (
+                [args.reentry_cooldown_days]
+                if args.reentry_cooldown_days != 0
+                else [0, max(args.horizon // 2, 1)]
             )
 
             best_params, tuning_df = tune_strategy_parameters(
@@ -866,6 +970,9 @@ def main() -> None:
                 warmup_candidates=warmup_grid,
                 qualification_candidates=qualification_grid,
                 max_live_pair_candidates=max_live_pair_grid,
+                score_mode=args.score_mode,
+                entry_scale_candidates=entry_scale_grid,
+                reentry_cooldown_candidates=cooldown_grid,
             )
 
             if not tuning_df.empty:
@@ -874,12 +981,19 @@ def main() -> None:
                 print(f"{'═' * 60}")
                 best_mean_return = float(tuning_df.iloc[0]["mean_return"])
                 best_mean_sharpe = float(tuning_df.iloc[0]["mean_sharpe"])
-                use_tuned = best_mean_return > 0.0 and best_mean_sharpe > 0.0
+                best_recent_sharpe = float(tuning_df.iloc[0]["recent_sharpe"])
+                use_tuned = (
+                    best_mean_return > 0.0
+                    and best_mean_sharpe > 0.0
+                    and best_recent_sharpe > 0.0
+                )
                 if use_tuned:
                     print(
                         f"  Selected warmup={best_params['warmup_days']}  "
                         f"qualification={best_params['qualification_days']}  "
-                        f"max_live_pairs={best_params['max_live_pairs']}"
+                        f"max_live_pairs={best_params['max_live_pairs']}  "
+                        f"entry_scale={best_params['entry_scale']:.2f}  "
+                        f"cooldown={best_params['reentry_cooldown_days']}"
                     )
                 else:
                     print(
@@ -895,6 +1009,10 @@ def main() -> None:
                     f"{best_mean_sharpe:.2f}"
                 )
                 print(
+                    f"  Most recent fold Sharpe: "
+                    f"{best_recent_sharpe:.2f}"
+                )
+                print(
                     f"  Saved: "
                     f"{PROJECT_ROOT / 'outputs' / 'forecast_strategy' / args.model / 'strategy_tuning.csv'}"
                 )
@@ -903,6 +1021,8 @@ def main() -> None:
                     warmup_days = best_params["warmup_days"]
                     qualification_days = best_params["qualification_days"]
                     max_live_pairs = best_params["max_live_pairs"]
+                    entry_scale = best_params["entry_scale"]
+                    reentry_cooldown_days = best_params["reentry_cooldown_days"]
 
         run_holdout(
             args.model,
@@ -911,6 +1031,9 @@ def main() -> None:
             warmup_days=warmup_days,
             qualification_days=qualification_days,
             max_live_pairs=max_live_pairs,
+            score_mode=args.score_mode,
+            entry_scale=entry_scale,
+            reentry_cooldown_days=reentry_cooldown_days,
             forced_mode=args.mode,
             default_mode=selected_mode,
             sweep_df=sweep_df,

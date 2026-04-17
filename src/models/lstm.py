@@ -64,6 +64,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.config import DEFAULT_CONFIG
+from src.models.prediction_metrics import evaluate_regression_predictions
 
 warnings.filterwarnings("ignore")
 
@@ -345,18 +346,17 @@ def compute_metrics(
     actual: np.ndarray,
     predicted: np.ndarray,
 ) -> dict[str, float]:
-    """Compute MSE, MAE, RMSE, and directional accuracy."""
-    diff = predicted - actual
-    mse = float(np.mean(diff**2))
-    mae = float(np.mean(np.abs(diff)))
-    rmse = float(np.sqrt(mse))
+    """Compute RMSE, directional accuracy, R², IC, profit-weighted DA, DW-MSE."""
+    metrics = evaluate_regression_predictions(actual, predicted)
 
-    # Directional accuracy: % of times sign matches
-    sign_match = (np.sign(predicted) == np.sign(actual)) & (actual != 0)
-    nonzero = (actual != 0).sum()
-    dir_acc = float(sign_match.sum() / max(nonzero, 1))
-
-    return {"mse": mse, "mae": mae, "rmse": rmse, "dir_acc": dir_acc}
+    return {
+        "rmse": metrics["rmse"],
+        "dir_acc": metrics["directional_accuracy"],
+        "r2": metrics["r2"],
+        "information_coefficient": metrics["information_coefficient"],
+        "profit_weighted_da": metrics["profit_weighted_da"],
+        "directional_weighted_mse": metrics["directional_weighted_mse"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ def tune_hyperparameters(
     results = []
 
     for hidden, window, lr in grid:
-        fold_mses = []
+        fold_metrics = []
         if verbose:
             print(f"\n  Tuning: hidden={hidden}, window={window}, lr={lr}")
 
@@ -416,38 +416,60 @@ def tune_hyperparameters(
             X_train_n, X_val_n, _, _ = normalize_features(X_train, X_val)
 
             # Train
-            _, val_mse = train_model(
+            model, val_mse = train_model(
                 X_train_n, y_train, X_val_n, y_val,
                 hidden_size=hidden,
                 learning_rate=lr,
                 verbose=False,
             )
 
-            fold_mses.append(val_mse)
+            # Full metrics for composite scoring
+            preds = predict(model, X_val_n)
+            metrics = compute_metrics(y_val, preds)
+            fold_metrics.append(metrics)
             if verbose:
-                print(f"    Fold {fold.label}: val_mse={val_mse:.6f} "
+                print(f"    Fold {fold.label}: RMSE={metrics['rmse']:.6f}  "
+                      f"R²={metrics['r2']:.4f}  DirAcc={metrics['dir_acc']:.3f}  "
                       f"(train={len(X_train)}, val={len(X_val)} sequences)")
 
-        if not fold_mses:
-            avg_mse = float("inf")
+        if not fold_metrics:
+            avg_rmse = float("inf")
+            avg_dw_mse = float("inf")
+            avg_r2 = float("-inf")
+            avg_dir_acc = 0.0
+            std_rmse = float("nan")
         else:
-            avg_mse = np.mean(fold_mses)
-            std_mse = np.std(fold_mses)
+            avg_rmse = np.mean([m["rmse"] for m in fold_metrics])
+            avg_dw_mse = np.mean([m["directional_weighted_mse"] for m in fold_metrics])
+            avg_r2 = np.mean([m["r2"] for m in fold_metrics])
+            avg_dir_acc = np.mean([m["dir_acc"] for m in fold_metrics])
+            std_rmse = np.std([m["rmse"] for m in fold_metrics])
+
+        composite = 0.5 * avg_r2 + 0.5 * avg_dir_acc
 
         results.append({
             "hidden_size": hidden,
             "window_size": window,
             "learning_rate": lr,
-            "avg_val_mse": avg_mse,
-            "std_val_mse": std_mse if fold_mses else float("nan"),
-            "n_folds": len(fold_mses),
+            "avg_val_rmse": avg_rmse,
+            "avg_val_directional_weighted_mse": avg_dw_mse,
+            "avg_val_r2": avg_r2,
+            "avg_val_dir_acc": avg_dir_acc,
+            "composite_score": composite,
+            "std_val_rmse": std_rmse,
+            "n_folds": len(fold_metrics),
         })
 
         if verbose:
-            print(f"    Avg val MSE: {avg_mse:.6f} ({len(fold_mses)} folds)")
+            print(f"    Avg RMSE={avg_rmse:.6f}  R²={avg_r2:.4f}  "
+                  f"DirAcc={avg_dir_acc:.3f}  Composite={composite:.4f}  "
+                  f"({len(fold_metrics)} folds)")
 
-    # Pick best
-    results_df = pd.DataFrame(results).sort_values("avg_val_mse")
+    # Pick best by composite score (R² + directional accuracy)
+    results_df = pd.DataFrame(results).sort_values(
+        ["composite_score", "avg_val_directional_weighted_mse", "avg_val_rmse"],
+        ascending=[False, True, True],
+    )
     best = results_df.iloc[0]
 
     if verbose:
@@ -457,14 +479,18 @@ def tune_hyperparameters(
         print(f"\nBest: hidden={int(best['hidden_size'])}, "
               f"window={int(best['window_size'])}, "
               f"lr={best['learning_rate']}, "
-              f"avg_mse={best['avg_val_mse']:.6f}")
+              f"DW-MSE={best['avg_val_directional_weighted_mse']:.6f}, "
+              f"R²={best['avg_val_r2']:.4f}, "
+              f"DirAcc={best['avg_val_dir_acc']:.3f}, "
+              f"Composite={best['composite_score']:.4f}")
         print(f"{'='*60}")
 
     return {
         "hidden_size": int(best["hidden_size"]),
         "window_size": int(best["window_size"]),
         "learning_rate": float(best["learning_rate"]),
-        "avg_val_mse": float(best["avg_val_mse"]),
+        "avg_val_rmse": float(best["avg_val_rmse"]),
+        "avg_val_directional_weighted_mse": float(best["avg_val_directional_weighted_mse"]),
         "tuning_results": results_df,
     }
 
@@ -536,8 +562,8 @@ def run_predictions_for_window(
     metrics = compute_metrics(y_val, preds)
 
     if verbose:
-        print(f"  [{window_label}] MSE={metrics['mse']:.6f}, "
-              f"MAE={metrics['mae']:.6f}, "
+        print(f"  [{window_label}] RMSE={metrics['rmse']:.6f}, "
+              f"DW-MSE={metrics['directional_weighted_mse']:.6f}, "
               f"DirAcc={metrics['dir_acc']:.3f}")
 
     # Build current spread values for deriving predicted_value and predicted_z
@@ -717,9 +743,14 @@ def run_lstm_pipeline(
 
             print(f"\n{'='*60}")
             print(f"LSTM {spread_type.upper()} Summary:")
-            print(f"  Avg val MSE: {summary_df['mse'].mean():.6f}")
-            print(f"  Avg val MAE: {summary_df['mae'].mean():.6f}")
+            print(f"  Avg val RMSE: {summary_df['rmse'].mean():.6f}")
+            if "directional_weighted_mse" in summary_df.columns:
+                print(f"  Avg val DW-MSE: {summary_df['directional_weighted_mse'].mean():.6f}")
             print(f"  Avg dir acc: {summary_df['dir_acc'].mean():.3f}")
+            if "r2" in summary_df.columns:
+                print(f"  Avg R²:      {summary_df['r2'].mean():.4f}")
+            if "information_coefficient" in summary_df.columns:
+                print(f"  Avg IC:      {summary_df['information_coefficient'].mean():.4f}")
             print(f"  Results: {summary_dir / 'metrics_summary.csv'}")
             print(f"{'='*60}")
         else:
