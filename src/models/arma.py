@@ -261,7 +261,13 @@ def forecast_horizon_walk_forward(
             continue
 
         current_spread = float(origin_row[spread_col])
-        actual_future_spread = float(target_row[spread_col])
+        if spread_col == "spread_kalman":
+            current_beta = float(origin_row["kalman_beta"]) if spread_col == "spread_kalman" else float(origin_row["initial_beta"])
+            p1_future = float(target_row["log_price_a"])
+            p2_future = float(target_row["log_price_b"])
+            actual_future_spread = p1_future - (current_beta * p2_future)
+        else:
+            actual_future_spread = float(target_row[spread_col])
         actual_change = actual_future_spread - current_spread
         predicted_change = predicted_future_spread - current_spread
         predicted_z = predicted_change / rolling_vol_at_origin

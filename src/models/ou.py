@@ -105,70 +105,6 @@ class OUOrchestrator:
         self.delta = delta
 
     def run_walk_forward(self, log_price_df: pd.DataFrame, pairs_metadata: pd.DataFrame, method: str="kalman") -> pd.DataFrame:
-        # all_signals = []
-        # eligible_pairs = pairs_metadata[pairs_metadata['is_eligible'] == True]
-        # available_tickers = set(log_price_df.columns)
-
-        # for _, meta in eligible_pairs.iterrows():
-        #     pair_str = str(meta['pair'])
-        #     found_tickers = []
-        #     for ticker in available_tickers:
-        #         # We look for the ticker followed by a hyphen or at the end of the string
-        #         if pair_str.startswith(ticker + "-"):
-        #             s1 = ticker
-        #             s2 = pair_str.replace(ticker + "-", "", 1)
-        #             if s2 in available_tickers:
-        #                 found_tickers = [s1, s2]
-        #                 break
-            
-        #     if len(found_tickers) != 2:
-        #         try:
-        #             s1, s2 = pair_str.rsplit('-', 1)
-        #         except ValueError:
-        #             continue
-        #     else:
-        #         s1, s2 = found_tickers
-
-        #     if s1 not in available_tickers or s2 not in available_tickers:
-        #         continue
-
-        #     # Construct the log-spread
-        #     # beta = meta['initial_beta']
-        #     # spread = (log_price_df[s1] - beta * log_price_df[s2]).values
-        #     dates = log_price_df.index
-        #     if method == "kalman":
-        #         spread, _ = kalman_spread(log_price_df[s1].values, log_price_df[s2].values, delta=0.01)
-        #     else:
-        #         beta = meta["initial_beta"]
-        #         spread = (log_price_df[s1] - beta * log_price_df[s2]).values
-            
-        #     model = OUModel()
-        #     pair_results = []
-
-        #     for t in range(self.lookback, len(spread)):
-        #         window = spread[t - self.lookback : t]
-        #         success = model.fit(window)
-        #         if not success:
-        #             continue
-                
-        #         z = model.get_z_score(spread[t])
-        #         if not np.isfinite(z):
-        #             continue
-                
-        #         pair_results.append({
-        #             'date': dates[t],
-        #             'pair': meta['pair'],
-        #             'z_score': z,
-        #             'kappa': model.kappa,
-        #             'theta': model.theta,
-        #             'sigma': model.sigma,
-        #             "eq_std": model.eq_std,
-        #             "half_life": model.half_life,
-        #         })
-
-        #     all_signals.extend(pair_results)
-            
-        # return pd.DataFrame(all_signals)
         all_signals = []
         
         for _, row in pairs_metadata.iterrows():
@@ -192,7 +128,7 @@ class OUOrchestrator:
                 window_s1 = s1_vals[t - self.lookback : t]
                 window_s2 = s2_vals[t - self.lookback : t]
                 if method == "kalman":
-                    beta_for_window = beta[t - self.lookback] if t - self.lookback >= 0 else beta[t]
+                    beta_for_window = beta[t - self.lookback : t]
                     window = window_s1 - beta_for_window * window_s2
                     current_beta = beta[t]
                 else:
@@ -202,12 +138,15 @@ class OUOrchestrator:
                 
                 curr_val = s1_vals[t] - current_beta * s2_vals[t]
                 pred_spread, pred_change, pred_z = model.predict_next(curr_val, self.delta)
+                actual_future_val = s1_vals[t + self.delta] - current_beta * s2_vals[t + self.delta]
+                actual_change = actual_future_val - curr_val
                 
                 all_signals.append({
                     'date': dates[t],
                     'pair': row['pair'],
                     'method': method,
                     'z_score': model.get_z_score(curr_val),
+                    'actual_change_10d': actual_change,
                     'pred_spread_10d': pred_spread,
                     'pred_change_10d': pred_change,
                     'pred_z_10d': pred_z,
@@ -217,65 +156,6 @@ class OUOrchestrator:
                 })
             
         return pd.DataFrame(all_signals)
-    
-# def run_ou_model():
-#     # Setup files and load data
-#     raw_engineered_path = DEFAULT_CONFIG.engineered_features_path
-#     raw_df = pd.read_csv(raw_engineered_path, parse_dates=["Date"]) # load raw prices for OU fitting
-
-#     pair_discovery_path = DEFAULT_CONFIG.processed_dir / "discovered_pairs.csv"
-#     pairs_df = pd.read_csv(pair_discovery_path)
-
-#     # Prepare data
-#     prices_pivot = raw_df.pivot(index="Date", columns="Ticker", values="Close")
-#     log_prices_df = np.log(prices_pivot)
-
-#     print(f"\n{'='*50}")
-#     print(f"Starting OU Baseline Orchestration")
-#     print(f"Targeting: {pairs_df['is_eligible'].sum()} Eligible Pairs")
-#     print(f"{'='*50}")
-
-#     orchestrator = OUOrchestrator(lookback=60)
-#     all_window_results = []
-#     for start_date, end_date, label in all_training_windows(DEFAULT_CONFIG):
-#         print("Currently processing window:", label)
-#         window_pairs = pairs_df[pairs_df['training_window'] == label]
-
-#         val_start = pd.to_datetime(end_date)
-#         val_end = val_start + pd.DateOffset(years=1)
-#         hist_start = val_start - pd.DateOffset(days=120) 
-
-#         log_prices_df.index = pd.to_datetime(log_prices_df.index)
-#         val_prices = log_prices_df.loc[hist_start : val_end]
-#         if val_prices.empty:
-#             print(f"  No price data for window {label}, skipping.")
-#             continue
-#         print(f"  Generating OOS signals ({val_start.date()} → {val_end.date()})...")
-#         signals = orchestrator.run_walk_forward(val_prices, window_pairs)
-#         oos_signals = signals[signals["date"] >= val_start]
- 
-#         if not oos_signals.empty:
-#             oos_signals = oos_signals.copy()
-#             oos_signals["training_window"] = label
-#             all_window_results.append(oos_signals)
-#             print(f"  {len(oos_signals)} signals generated.")
-#         else:
-#             print(f"  No OOS signals for window {label}.")
-    
-#     if all_window_results:
-#         final_df = pd.concat(all_window_results, ignore_index=True)
-#         final_df = final_df.sort_values('date').drop_duplicates(subset=['date', 'pair'], keep='last')
-        
-#         output_path = DEFAULT_CONFIG.processed_dir / "ou_baseline_signals.csv"
-#         final_df.to_csv(output_path, index=False)
-#         print(f"\n{'='*50}")
-#         print(f"Total OOS signals: {len(final_df)}")
-#         print(f"Pairs covered: {final_df['pair'].nunique()}")
-#         print(f"Saved to: {output_path}")
-#         print(f"{'='*50}")
-#     else:
-#         print("\n[FAILED] No valid pairs found for any training window.")
-#         return
     
 def run_ou_pipeline():
     config = DEFAULT_CONFIG
@@ -322,6 +202,3 @@ def run_ou_pipeline():
 
 if __name__ == "__main__":
     run_ou_pipeline()
-
-# if __name__ == "__main__":
-#     run_ou_model()

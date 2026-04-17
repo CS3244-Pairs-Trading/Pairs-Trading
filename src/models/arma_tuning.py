@@ -114,6 +114,10 @@ def fit_once_validate_pair(
         return None
     if n_eval_points < max(min_eval_points, horizon + 1):
         return None
+    
+    p1 = val_pair_df["log_price_a"].astype(float).to_numpy()
+    p2 = val_pair_df["log_price_b"].astype(float).to_numpy()
+    betas = val_pair_df["kalman_beta"].astype(float).to_numpy()
 
     train_series = train_pair_df[spread_col].astype(float)
     eval_spread = val_pair_df[spread_col].astype(float).to_numpy()
@@ -138,12 +142,14 @@ def fit_once_validate_pair(
             continue
 
         current_spread = float(eval_spread[i])
-        actual_future_spread = float(eval_spread[i + horizon])
-        predicted_future_spread = float(predicted_eval_spread[i + horizon])
+        current_beta = betas[i]
 
-        actual_change = actual_future_spread - current_spread
+        predicted_future_spread = float(predicted_eval_spread[i + horizon])
         predicted_change = predicted_future_spread - current_spread
         predicted_z = predicted_change / vol_at_origin
+
+        actual_future_spread = p1[i + horizon] - (current_beta * p2[i + horizon])
+        actual_change = actual_future_spread - current_spread
 
         rows.append(
             {

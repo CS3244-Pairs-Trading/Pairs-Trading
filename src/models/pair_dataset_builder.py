@@ -231,8 +231,15 @@ def build_pair_dataset(
         volume_b=vol_b,
         kalman_delta=kalman_delta,
     )
-    kalman_col = features["spread_kalman"] if "spread_kalman" in features.columns else None
-    labels = compute_labels(features["spread_ols"], spread_kalman=kalman_col, horizons=label_horizons)
+    # kalman_col = features["spread_kalman"] if "spread_kalman" in features.columns else None
+    # labels = compute_labels(features["spread_ols"], spread_kalman=kalman_col, horizons=label_horizons)
+    labels = compute_labels(
+        lp_a=raw["log_price_a"],
+        lp_b=raw["log_price_b"],
+        current_beta=features["kalman_beta"],
+        ols_beta=ols_beta,
+        horizons=label_horizons
+    )
 
     pair_df = pd.concat([raw, features, labels], axis=1)
     pair_df = pair_df.loc[:, ~pair_df.columns.duplicated()]

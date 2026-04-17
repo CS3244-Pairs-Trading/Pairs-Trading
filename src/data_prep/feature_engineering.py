@@ -235,8 +235,10 @@ def compute_pair_features(
 # ---------------------------------------------------------------------------
 
 def compute_labels(
-    spread_ols: pd.Series,
-    spread_kalman: pd.Series | None = None,
+    lp_a: pd.Series,
+    lp_b: pd.Series,
+    current_beta: pd.Series,
+    ols_beta: float,
     horizons: tuple[int, ...] = (5, 10),
 ) -> pd.DataFrame:
     """
@@ -249,24 +251,23 @@ def compute_labels(
     The labels use FUTURE data — they are targets, not features.
     They must only be used in the training set to avoid leakage.
     """
-    labels = pd.DataFrame(index=spread_ols.index)
-    rolling_mean = spread_ols.rolling(60, min_periods=30).mean()
-    demeaned = spread_ols - rolling_mean
+    labels = pd.DataFrame(index=lp_a.index)
+    spread_ols = lp_a - ols_beta * lp_b
+    rolling_mean_ols = spread_ols.rolling(60, min_periods=30).mean()
+    demeaned_ols = spread_ols - rolling_mean_ols
 
     for h in horizons:
-        future_demeaned = demeaned.shift(-h)
-
+        future_spread_ols = spread_ols.shift(-h)
         # Binary: did spread get closer to rolling mean?
-        labels[f"label_binary_{h}d"] = (
-            future_demeaned.abs() < demeaned.abs()
-        ).astype(float)
-
         # Continuous: OLS spread change (for regression models)
-        labels[f"label_continuous_{h}d"] = spread_ols.shift(-h) - spread_ols
+        labels[f"label_continuous_{h}d"] = future_spread_ols - spread_ols
+        labels[f"label_binary_{h}d"] = ((future_spread_ols - rolling_mean_ols.shift(-h)).abs() < demeaned_ols.abs()).astype(float)
 
         # Kalman spread change (for Kalman variant comparison)
-        if spread_kalman is not None:
-            labels[f"label_kalman_{h}d"] = spread_kalman.shift(-h) - spread_kalman
+        current_spread_k = lp_a - (current_beta * lp_b)
+        # Future value at t+h using Beta from time t
+        future_val_locked = lp_a.shift(-h) - (current_beta * lp_b.shift(-h))
+        labels[f"label_kalman_{h}d"] = future_val_locked - current_spread_k
 
     return labels
 
