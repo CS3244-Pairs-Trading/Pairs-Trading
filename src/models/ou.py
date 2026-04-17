@@ -138,8 +138,10 @@ class OUOrchestrator:
                 
                 curr_val = s1_vals[t] - current_beta * s2_vals[t]
                 pred_spread, pred_change, pred_z = model.predict_next(curr_val, self.delta)
-                actual_future_val = s1_vals[t + self.delta] - current_beta * s2_vals[t + self.delta]
-                actual_change = actual_future_val - curr_val
+                actual_change = None
+                if t + self.delta < len(s1_vals):
+                    actual_future_val = s1_vals[t + self.delta] - current_beta * s2_vals[t + self.delta]
+                    actual_change = actual_future_val - curr_val
                 
                 all_signals.append({
                     'date': dates[t],
