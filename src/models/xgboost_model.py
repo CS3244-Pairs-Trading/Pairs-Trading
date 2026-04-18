@@ -394,7 +394,7 @@ def tune_across_windows(
 
     print(f"\n  Best params  : depth={best_params['max_depth']}  "
           f"n_est={best_params['n_estimators']}  lr={best_params['learning_rate']}")
-    print(f"  Avg val MSE  : {float(best['mean_val_rmse']):.6f}")
+    print(f"  Avg val RMSE  : {float(best['mean_val_rmse']):.6f}")
     print(f"  Avg val DW-MSE: {float(best['mean_val_directional_weighted_mse']):.6f}")
     print(f"  Avg val R²   : {float(best['mean_val_r2']):.4f}")
     print(f"  Avg val IC   : {float(best['mean_val_ic']):.4f}")
@@ -479,7 +479,7 @@ def run_rolling_windows(
             "n_val_samples": len(X_val),
         }
         print(
-            f"  [{window_label}]  MSE={metrics['mse']:.6f}  DW-MSE={metrics['directional_weighted_mse']:.6f}  R²={metrics['r2']:.4f}  "
+            f"  [{window_label}]  RMSE={metrics['rmse']:.6f}  DW-MSE={metrics['directional_weighted_mse']:.6f}  R²={metrics['r2']:.4f}  "
             f"IC={metrics['information_coefficient']:.4f}  DirAcc={metrics['directional_accuracy']:.3f}  "
             f"({len(X_vl_d)} pairs)"
         )
@@ -565,7 +565,7 @@ def run_holdout(
 
     print(
         f"\n── Holdout [{holdout_window}] ──\n"
-        f"  MSE={metrics['mse']:.6f}  DW-MSE={metrics['directional_weighted_mse']:.6f}  R²={metrics['r2']:.4f}  "
+        f"  RMSE={metrics['rmse']:.6f}  DW-MSE={metrics['directional_weighted_mse']:.6f}  R²={metrics['r2']:.4f}  "
         f"IC={metrics['information_coefficient']:.4f}  DirAcc={metrics['directional_accuracy']:.3f}  "
         f"({len(X_te_d)} pairs, {len(X_test):,} rows)"
     )
