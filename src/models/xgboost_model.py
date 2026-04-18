@@ -386,7 +386,7 @@ def tune_across_windows(
         ) else ""
         print(
             f"  {int(row['max_depth']):>5}  {int(row['n_estimators']):>5}  "
-            f"{row['learning_rate']:>5.2f}  {row['mean_val_mse']:>10.6f}  "
+            f"{row['learning_rate']:>5.2f}  {row['mean_val_rmse']:>10.6f}  "
             f"{row['mean_val_directional_weighted_mse']:>10.6f}  "
             f"{row['mean_val_r2']:>8.4f}  {row['mean_val_dir_acc']:>7.3f}  "
             f"{row['composite_score']:>10.4f}{marker}"
@@ -394,7 +394,7 @@ def tune_across_windows(
 
     print(f"\n  Best params  : depth={best_params['max_depth']}  "
           f"n_est={best_params['n_estimators']}  lr={best_params['learning_rate']}")
-    print(f"  Avg val MSE  : {float(best['mean_val_mse']):.6f}")
+    print(f"  Avg val MSE  : {float(best['mean_val_rmse']):.6f}")
     print(f"  Avg val DW-MSE: {float(best['mean_val_directional_weighted_mse']):.6f}")
     print(f"  Avg val R²   : {float(best['mean_val_r2']):.4f}")
     print(f"  Avg val IC   : {float(best['mean_val_ic']):.4f}")
