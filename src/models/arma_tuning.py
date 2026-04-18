@@ -15,6 +15,7 @@ from src.models.arma import (
     resolve_volatility_column,
     spread_variant_tag,
 )
+from src.models.prediction_metrics import directional_weighted_mse, evaluate_regression_predictions
 
 P_VALUES = [0,1,2,4,6,8,9,10]
 Q_VALUES = [0,1,2,4,6,8,9,10]
@@ -56,7 +57,27 @@ def _extract_pair_frame(
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    out = df.loc[df["pair"].astype(str) == str(pair), ["Date", spread_col, vol_col]].copy()
+    cols = [
+        "Date",
+        "pair",
+        spread_col,
+        vol_col,
+        "log_price_a",
+        "log_price_b",
+        "kalman_beta",
+    ]
+
+    out = df.loc[
+        df["pair"].astype(str) == str(pair),
+        [
+            "Date",
+            spread_col,
+            vol_col,
+            "log_price_a",
+            "log_price_b",
+            "kalman_beta",
+        ],
+    ].copy()
     if out.empty:
         return out
 
@@ -142,7 +163,7 @@ def fit_once_validate_pair(
             continue
 
         current_spread = float(eval_spread[i])
-        current_beta = betas[i]
+        current_beta = betas[i] if np.isfinite(betas[i]) else 1.0
 
         predicted_future_spread = float(predicted_eval_spread[i + horizon])
         predicted_change = predicted_future_spread - current_spread
@@ -169,7 +190,7 @@ def fit_once_validate_pair(
         return None
 
     forecast_df = pd.DataFrame(rows).sort_values("forecast_origin_date").reset_index(drop=True)
-    metrics_eval = _evaluate_fit_once_forecasts(forecast_df)
+    metrics_eval = evaluate_regression_predictions(actual=forecast_df["actual_change"].to_numpy(), predicted=forecast_df["predicted_change"].to_numpy())
     metrics: dict[str, float | int | str] = {
         "pair": pair,
         "window_label": window_label,
@@ -178,8 +199,9 @@ def fit_once_validate_pair(
         "p": int(p),
         "q": int(q),
         "horizon": int(horizon),
-        "mse": metrics_eval["mse"],
-        "mae": metrics_eval["mae"],
+        "directional_weighted_mse": float(metrics_eval["directional_weighted_mse"]),
+        "mse": float(np.mean((forecast_df["actual_change"] - forecast_df["predicted_change"]) ** 2)),
+        "mae": float(np.mean(np.abs(forecast_df["actual_change"] - forecast_df["predicted_change"]))),
         "n_train": int(n_train),
         "n_eval_points": int(n_eval_points),
         "n_forecast_origins": int(len(forecast_df)),
@@ -263,6 +285,7 @@ def run_tuning_for_window(
                         "p": int(metrics["p"]),
                         "q": int(metrics["q"]),
                         "horizon": int(metrics["horizon"]),
+                        "directional_weighted_mse": float(metrics["directional_weighted_mse"]),
                         "mse": float(metrics["mse"]),
                         "mae": float(metrics["mae"]),
                         "n_train": int(metrics["n_train"]),
@@ -297,6 +320,7 @@ def aggregate_global_ranking(validation_results: pd.DataFrame) -> pd.DataFrame:
     ranking = (
         validation_results.groupby(["spread_col", "p", "q"], as_index=False)
         .agg(
+            mean_val_directional_weighted_mse=("directional_weighted_mse", "mean"),
             mean_val_mse=("mse", "mean"),
             mean_val_mae=("mae", "mean"),
             n_successful_runs=("pair", "size"),
@@ -308,8 +332,8 @@ def aggregate_global_ranking(validation_results: pd.DataFrame) -> pd.DataFrame:
     )
 
     ranking = ranking.sort_values(
-        ["spread_col", "mean_val_mse", "mean_val_mae", "n_successful_runs", "p", "q"],
-        ascending=[True, True, True, False, True, True],
+        ["spread_col", "mean_val_directional_weighted_mse", "mean_val_mse", "mean_val_mae", "n_successful_runs", "p", "q"],
+        ascending=[True, True, True, True, False, True, True],
     ).reset_index(drop=True)
     return ranking
 
@@ -323,6 +347,7 @@ def select_global_params(global_ranking: pd.DataFrame) -> pd.DataFrame:
                 "spread_col",
                 "selected_p",
                 "selected_q",
+                "mean_val_directional_weighted_mse",
                 "mean_val_mse",
                 "mean_val_mae",
                 "n_successful_runs",
@@ -335,13 +360,14 @@ def select_global_params(global_ranking: pd.DataFrame) -> pd.DataFrame:
 
     top_rows = global_ranking.groupby("spread_col", as_index=False).head(1).copy()
     top_rows = top_rows.rename(columns={"p": "selected_p", "q": "selected_q"})
-    top_rows["selection_metric"] = "mse_change"
+    top_rows["selection_metric"] = "directional_weighted_mse"
 
     return top_rows[
         [
             "spread_col",
             "selected_p",
             "selected_q",
+            "mean_val_directional_weighted_mse",
             "mean_val_mse",
             "mean_val_mae",
             "n_successful_runs",

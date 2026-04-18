@@ -11,6 +11,7 @@ import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
 
 from src.config import DEFAULT_CONFIG
+from src.models.prediction_metrics import evaluate_regression_predictions, DEFAULT_DIRECTIONAL_MSE_GAMMA
 
 warnings.filterwarnings("ignore")
 
@@ -165,6 +166,25 @@ def extract_pair_spread(df: pd.DataFrame, pair: str, spread_col: str) -> pd.Seri
             f"Available columns (first 25): {list(df.columns)[:25]}"
         )
 
+    cols = [
+        "Date",
+        "pair",
+        spread_col,
+        "log_price_a",
+        "log_price_b",
+        "kalman_beta",
+    ]
+
+    out = df.loc[
+        df["pair"].astype(str) == str(pair),
+        [
+            "Date",
+            spread_col,
+            "log_price_a",
+            "log_price_b",
+            "kalman_beta",
+        ],
+    ].copy()
     out = df.loc[df["pair"].astype(str) == str(pair), ["Date", spread_col]].copy()
     out = out.dropna(subset=[spread_col]).sort_values("Date")
     if out.empty:
@@ -394,7 +414,18 @@ def run_arma_for_pair(
     ]
     forecast_df = forecast_df[final_cols].copy()
 
-    eval_metrics = evaluate_forecasts(forecast_df)
+    metrics_eval = evaluate_regression_predictions(
+        forecast_df["actual_change"].to_numpy(),
+        forecast_df["predicted_change"].to_numpy(),
+        gamma=DEFAULT_DIRECTIONAL_MSE_GAMMA,
+    )
+    eval_metrics = {
+        "mse": float(np.mean((forecast_df["actual_change"] - forecast_df["predicted_change"]) ** 2)),
+        "mae": float(np.mean(np.abs(forecast_df["actual_change"] - forecast_df["predicted_change"]))),
+        "directional_weighted_mse": float(metrics_eval["directional_weighted_mse"]),
+        "directional_accuracy": float(metrics_eval["directional_accuracy"]),
+        "information_coefficient": float(metrics_eval["information_coefficient"]),
+    }
     metrics: dict[str, float | int | str] = {
         "pair": pair,
         "spread_col": spread_col,
@@ -410,6 +441,9 @@ def run_arma_for_pair(
         "mae": eval_metrics["mae"],
         "mse_level": eval_metrics["mse_level"],
         "mae_level": eval_metrics["mae_level"],
+        "directional_weighted_mse": eval_metrics["directional_weighted_mse"],
+        "directional_accuracy": eval_metrics["directional_accuracy"],
+        "information_coefficient": eval_metrics["information_coefficient"],
     }
 
     model_summary = (

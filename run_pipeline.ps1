@@ -146,21 +146,21 @@ if ($SkipModelTraining) {
         switch ($model) {
             "ou"      { & $py -m src.models.ou }
             "arma"    { 
-                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
+                # & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
                 & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon
             }
             "linear"  { & $py -m src.models.linear_regression }
-            "xgboost" { & $py -m src.models.xgboost_model }
+            "xgboost" { & $py -m src.models.xgboost_model --spread_type kalman }
             "lstm"    { & $py -m src.models.lstm }
-            "lstm_encdec" { & $py -m src.models.lstm_encoder_decoder --spread ols kalman }
+            "lstm_encdec" { & $py -m src.models.lstm_encoder_decoder --spread kalman }
             "all"     {
                 & $py -m src.models.ou
-                & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
+                # & $py -m src.models.arma_tuning --spread_col spread_ols --horizon $horizon
                 & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon
                 & $py -m src.models.linear_regression
-                & $py -m src.models.xgboost_model
+                & $py -m src.models.xgboost_model --spread_type kalman
                 & $py -m src.models.lstm
-                & $py -m src.models.lstm_encoder_decoder --spread ols kalman
+                & $py -m src.models.lstm_encoder_decoder --spread kalman
             }
         }
         & Write-Host "Clearing Python memory..." -ForegroundColor Yellow
@@ -177,31 +177,31 @@ if ($SkipBestParamRuns) {
         switch ($model) {
             "ou"      { & $py -m src.models.ou }
             "arma"    {
-                & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
+                # & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
                 & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
             }
             "linear"  { & $py -m src.models.linear_regression }
             "xgboost" {
-                & $py -m src.models.xgboost_model --spread_type both --no_tune
+                & $py -m src.models.xgboost_model --spread_type kalman --no_tune
                 # better version after editing xgboost_model.py:
-                # & $py -m src.models.xgboost_model --spread_type both --no_tune --max_depth 4 --n_estimators 200 --learning_rate 0.05
+                # & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 4 --n_estimators 200 --learning_rate 0.05
             }
             "lstm"    {
-                & $py -m src.models.lstm --spread ols kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
+                & $py -m src.models.lstm --spread kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
             }
             "lstm_encdec" {
-                & $py -m src.models.lstm_encoder_decoder --spread ols kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
+                & $py -m src.models.lstm_encoder_decoder --spread kalman --hidden 64 --window_size 20 --lr 0.001 --no_tune
             }
             "all"     {
                 & $py -m src.models.ou
-                & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
+                # & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
                 & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
                 & $py -m src.models.linear_regression
-                & $py -m src.models.xgboost_model --spread_type ols --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
+                # & $py -m src.models.xgboost_model --spread_type ols --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
                 & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 3 --n_estimators 200 --learning_rate 0.01
-                & $py -m src.models.lstm --spread ols --hidden 32 --window_size 20 --lr 0.001 --no_tune
+                # & $py -m src.models.lstm --spread ols --hidden 32 --window_size 20 --lr 0.001 --no_tune
                 & $py -m src.models.lstm --spread kalman --hidden 32 --window_size 20 --lr 0.001 --no_tune
-                & $py -m src.models.lstm_encoder_decoder --spread ols --hidden 32 --window_size 20 --lr 0.0005 --no_tune
+                # & $py -m src.models.lstm_encoder_decoder --spread ols --hidden 32 --window_size 20 --lr 0.0005 --no_tune
                 & $py -m src.models.lstm_encoder_decoder --spread kalman --hidden 64 --window_size 20 --lr 0.0005 --no_tune
             }
         }
