@@ -18,11 +18,13 @@ Features (11 columns, pre-computed by pair_dataset_builder.py):
     10. kalman_beta_change: 5-day change in Kalman beta
     11. spread_acceleration: second derivative of spread
 
-Evaluation metrics:
-    1. MSE
-    2. MAE
-    3. Directional accuracy (% of times sign(predicted) == sign(actual))
-    4. Holdout: RMSE (same unit as spread change)
+Evaluation metrics (per pair, per window):
+    1. RMSE
+    2. Directional accuracy   (% of times sign(predicted) == sign(actual))
+    3. R²
+    4. Information coefficient (rank correlation of predicted vs actual)
+    5. Profit-weighted directional accuracy
+    6. Directional-weighted MSE
 
 Input:
     data/processed/pair_datasets/<window>/
@@ -38,7 +40,9 @@ Output (saved separately for OLS and Kalman):
     data/processed/linear_regression_outputs/<spread_type>/<window>/pairs/<pair>/
         lr_forecasts_val.csv --> Date, pair, actual, predicted_spread_change, ...
         lr_forecasts_test.csv --> same
-        lr_metrics_val.csv --> mse, mae, rmse, directional_accuracy, n_train, n_eval
+        lr_metrics_val.csv --> rmse, directional_accuracy, r2, information_coefficient, profit_weighted_da,
+                               directional_weighted_mse, pair, window_label, n_train, n_eval, n_features, target_col,
+                               spread_col
         lr_metrics_test.csv --> same
 
     data/processed/linear_regression_outputs/<spread_type>/
@@ -115,11 +119,11 @@ def compute_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     pw_da = metrics["profit_weighted_da"]
 
     return {
-        "rmse":                   round(metrics["rmse"], 6),
-        "directional_accuracy":   round(da,   4) if not np.isnan(da) else None,
-        "r2":                     round(r2,   6) if not np.isnan(r2) else None,
+        "rmse": round(metrics["rmse"], 6),
+        "directional_accuracy": round(da,   4) if not np.isnan(da) else None,
+        "r2": round(r2, 6) if not np.isnan(r2) else None,
         "information_coefficient": round(ic,  4) if not np.isnan(ic) else None,
-        "profit_weighted_da":     round(pw_da, 4) if not np.isnan(pw_da) else None,
+        "profit_weighted_da": round(pw_da, 4) if not np.isnan(pw_da) else None,
         "directional_weighted_mse": round(metrics["directional_weighted_mse"], 6),
     }
 
@@ -379,7 +383,7 @@ def run_window(
 TARGET_WINDOW = None # e.g. "2010_2012"
 TARGET_PAIR = None # e.g. "gsk-wec"
 EVAL_SPLIT = "auto" # "auto", "val", "test", or "both"
-                       # set to "test" when running the holdout window
+                    # set to "test" when running the holdout window
 
 def main() -> None:
     input_root = DEFAULT_CONFIG.processed_dir / "pair_datasets"
