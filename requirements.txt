@@ -12,3 +12,4 @@ numba
 torch
 xgboost
 shap
+plotly
