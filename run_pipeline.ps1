@@ -195,7 +195,7 @@ if ($SkipBestParamRuns) {
             "all"     {
                 & $py -m src.models.ou
                 # & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
-                & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
+                & $py -m src.models.arma --spread_col spread_kalman --p 7 --q 2 --horizon $horizon --eval_split val
                 & $py -m src.models.linear_regression
                 # & $py -m src.models.xgboost_model --spread_type ols --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
                 & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 3 --n_estimators 200 --learning_rate 0.01

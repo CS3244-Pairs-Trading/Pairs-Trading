@@ -17,8 +17,8 @@ from src.models.arma import (
 )
 from src.models.prediction_metrics import directional_weighted_mse, evaluate_regression_predictions
 
-P_VALUES = [0,1,2,4,6,8,9,10]
-Q_VALUES = [0,1,2,4,6,8,9,10]
+P_VALUES = [0,1,2,3,4,5,6,7,8,9,10]
+Q_VALUES = [0,1,2,3,4,5,6,7,8,9,10]
 
 
 def _parse_int_list(raw: str | None, default_values: list[int]) -> list[int]:
@@ -97,8 +97,6 @@ def _evaluate_fit_once_forecasts(forecast_df: pd.DataFrame) -> dict[str, float]:
     return {
         "mse": float(np.mean((actual_change - predicted_change) ** 2)),
         "mae": float(np.mean(np.abs(actual_change - predicted_change))),
-        "mse_level": float(np.mean((actual_value - predicted_value) ** 2)),
-        "mae_level": float(np.mean(np.abs(actual_value - predicted_value))),
     }
 
 
@@ -205,8 +203,6 @@ def fit_once_validate_pair(
         "n_train": int(n_train),
         "n_eval_points": int(n_eval_points),
         "n_forecast_origins": int(len(forecast_df)),
-        "mse_level": metrics_eval["mse_level"],
-        "mae_level": metrics_eval["mae_level"],
     }
     return forecast_df, metrics
 
@@ -269,7 +265,8 @@ def run_tuning_for_window(
                         min_eval_points=min_eval_points,
                         window_label=window_label,
                     )
-                except Exception:
+                except Exception as exc:
+                    print(f"FAIL | pair={pair} | p={p} | q={q} | error={exc}")
                     continue
 
                 if result is None:
@@ -291,8 +288,6 @@ def run_tuning_for_window(
                         "n_train": int(metrics["n_train"]),
                         "n_eval_points": int(metrics["n_eval_points"]),
                         "n_forecast_origins": int(metrics["n_forecast_origins"]),
-                        "mse_level": float(metrics["mse_level"]),
-                        "mae_level": float(metrics["mae_level"]),
                     }
                 )
 

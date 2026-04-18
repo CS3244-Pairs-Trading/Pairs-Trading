@@ -323,8 +323,6 @@ def evaluate_forecasts(forecast_df: pd.DataFrame) -> dict[str, float]:
     return {
         "mse": compute_mse(actual_change, predicted_change),
         "mae": compute_mae(actual_change, predicted_change),
-        "mse_level": compute_mse(actual_value, predicted_value),
-        "mae_level": compute_mae(actual_value, predicted_value),
     }
 
 
@@ -439,8 +437,6 @@ def run_arma_for_pair(
         "window_label": window_label,
         "mse": eval_metrics["mse"],
         "mae": eval_metrics["mae"],
-        "mse_level": eval_metrics["mse_level"],
-        "mae_level": eval_metrics["mae_level"],
         "directional_weighted_mse": eval_metrics["directional_weighted_mse"],
         "directional_accuracy": eval_metrics["directional_accuracy"],
         "information_coefficient": eval_metrics["information_coefficient"],
