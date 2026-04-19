@@ -17,10 +17,12 @@ Pipeline (per MODEL_BRIEF):
     Step 2 — Train + predict on each rolling window
              Retrain with best params on each window's train set.
              Generate predictions on each window's val set.
+             Save trained model to disk (NEW).
 
     Step 3 — Holdout evaluation
              Retrain with best params on holdout train set.
              Generate predictions on holdout test set.
+             Save trained model to disk (NEW).
 
 Output (per MODEL_BRIEF):
     data/processed/predictions/xgboost_ols/<window>/predictions.csv
@@ -32,6 +34,10 @@ Prediction CSV columns:
 Tuning summary saved to:
     data/processed/predictions/xgboost_ols/tuning_summary.csv
     data/processed/predictions/xgboost_kalman/tuning_summary.csv
+
+Saved models (NEW):
+    data/processed/models/xgboost_ols/<window>.ubj
+    data/processed/models/xgboost_kalman/<window>.ubj
 
 Usage:
     python -m src.models.xgboost_model
@@ -360,8 +366,6 @@ def tune_across_windows(
     )
 
     # Composite selection score: 0.5 * R² + 0.5 * directional_accuracy
-    # Both are on [0, 1] scale (R² can be negative but that's fine — it
-    # correctly penalises models worse than predicting the mean).
     avg["composite_score"] = 0.5 * avg["mean_val_r2"] + 0.5 * avg["mean_val_dir_acc"]
     avg = avg.sort_values(
         ["composite_score", "mean_val_directional_weighted_mse", "mean_val_rmse"],
@@ -416,16 +420,26 @@ def run_rolling_windows(
     preds_root: Path,
     min_samples: int,
     use_zscore: bool = False,
+    models_root: Optional[Path] = None,   # NEW: where to save .ubj files
 ) -> Dict[str, Dict]:
     """
     With best_params fixed, retrain on each window's train set and
     generate predictions on the val set.
+
+    NEW: saves the trained XGBRegressor for each window to
+         models_root / xgboost_<spread_type> / <window>.ubj
 
     Returns per-window metrics dict.
     """
     target_col = _resolve_target(spread_type, use_zscore)
     spread_col = "spread_ols" if spread_type == "ols" else "spread_kalman"
     model_name = f"xgboost_{spread_type}"
+
+    # ── NEW: resolve model save directory ────────────────────────────────
+    if models_root is None:
+        models_root = DEFAULT_CONFIG.processed_dir / "models"
+    model_save_dir = models_root / model_name
+    model_save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n── Rolling window predictions ──")
     results: Dict[str, Dict] = {}
@@ -451,6 +465,9 @@ def run_rolling_windows(
 
         pipeline.train(X_train, y_train, X_val, y_val, **best_params)
         metrics = pipeline.evaluate(X_val, y_val)
+
+        # ── NEW: persist the trained model ────────────────────────────────
+        pipeline.save_model(model_save_dir / f"{window_label}.ubj")
 
         predictions_df = _collect_predictions(
             val_df, sorted(X_vl_d.keys()),
@@ -499,16 +516,26 @@ def run_holdout(
     preds_root: Path,
     min_samples: int,
     use_zscore: bool = False,
+    models_root: Optional[Path] = None,   # NEW
 ) -> Optional[Dict]:
     """
     Retrain with best_params on the holdout train set,
     generate predictions on the holdout test set.
+
+    NEW: saves the holdout model to
+         models_root / xgboost_<spread_type> / <holdout_window>.ubj
 
     The holdout window folder must contain test_pair_dataset.csv.
     """
     target_col = _resolve_target(spread_type, use_zscore)
     spread_col = "spread_ols" if spread_type == "ols" else "spread_kalman"
     model_name = f"xgboost_{spread_type}"
+
+    # ── NEW: resolve model save directory ────────────────────────────────
+    if models_root is None:
+        models_root = DEFAULT_CONFIG.processed_dir / "models"
+    model_save_dir = models_root / model_name
+    model_save_dir.mkdir(parents=True, exist_ok=True)
 
     window_dir = datasets_root / holdout_window
     try:
@@ -539,6 +566,9 @@ def run_holdout(
 
     pipeline.train(X_train, y_train, **best_params)
     metrics = pipeline.evaluate(X_test, y_test)
+
+    # ── NEW: persist holdout model ─────────────────────────────────────
+    pipeline.save_model(model_save_dir / f"{holdout_window}.ubj")
 
     predictions_df = _collect_predictions(
         test_df, sorted(X_te_d.keys()),
@@ -580,6 +610,7 @@ def run_variant(
     spread_type: str = "ols",
     datasets_root: Optional[Path] = None,
     preds_root: Optional[Path] = None,
+    models_root: Optional[Path] = None,   # NEW
     min_samples: int = 30,
     tune: bool = True,
     target_window: Optional[str] = None,
@@ -592,6 +623,8 @@ def run_variant(
         spread_type    : 'ols' or 'kalman'
         datasets_root  : override DEFAULT_CONFIG path
         preds_root     : override DEFAULT_CONFIG path
+        models_root    : where to save .ubj model files (NEW)
+                         default: DEFAULT_CONFIG.processed_dir / "models"
         min_samples    : minimum rows per pair per split
         tune           : if False, use default params (skip grid search)
         target_window  : run only this one window (useful for debugging)
@@ -651,6 +684,7 @@ def run_variant(
     window_results = run_rolling_windows(
         rolling_dirs, spread_type, best_params, preds_root, min_samples,
         use_zscore=use_zscore,
+        models_root=models_root,       # NEW
     )
 
     # ── Step 3: Holdout evaluation ────────────────────────────────────
@@ -660,6 +694,7 @@ def run_variant(
             holdout_label, spread_type, best_params,
             datasets_root, preds_root, min_samples,
             use_zscore=use_zscore,
+            models_root=models_root,   # NEW
         )
 
     return {
@@ -677,6 +712,7 @@ def run_variant(
 def run_both_variants(
     datasets_root: Optional[Path] = None,
     preds_root: Optional[Path] = None,
+    models_root: Optional[Path] = None,   # NEW
     min_samples: int = 30,
     tune: bool = True,
     target_window: Optional[str] = None,
@@ -688,8 +724,8 @@ def run_both_variants(
     OLS vs Kalman comparison is on avg val R² (within-model).
     Cross-type Sharpe comparison happens in the backtest engine.
     """
-    ols_result    = run_variant("ols",    datasets_root, preds_root, min_samples, tune, target_window, use_zscore)
-    kalman_result = run_variant("kalman", datasets_root, preds_root, min_samples, tune, target_window, use_zscore)
+    ols_result    = run_variant("ols",    datasets_root, preds_root, models_root, min_samples, tune, target_window, use_zscore)
+    kalman_result = run_variant("kalman", datasets_root, preds_root, models_root, min_samples, tune, target_window, use_zscore)
 
     # Summary table
     windows = sorted(set(ols_result["window_results"]) | set(kalman_result["window_results"]))
@@ -734,6 +770,10 @@ if __name__ == "__main__":
         help="Override DEFAULT_CONFIG path for predictions/",
     )
     parser.add_argument(
+        "--models_root", type=str, default=None,
+        help="Where to save trained .ubj model files (default: processed/models/).",
+    )
+    parser.add_argument(
         "--window", type=str, default=None,
         help="Debug mode: run only this rolling window (holdout skipped).",
     )
@@ -754,10 +794,11 @@ if __name__ == "__main__":
 
     datasets_root = Path(args.pair_datasets_root) if args.pair_datasets_root else None
     preds_root    = Path(args.predictions_root)    if args.predictions_root    else None
+    models_root   = Path(args.models_root)         if args.models_root         else None
 
     if args.spread_type == "both":
-        run_both_variants(datasets_root, preds_root, args.min_samples,
+        run_both_variants(datasets_root, preds_root, models_root, args.min_samples,
                           not args.no_tune, args.window)
     else:
-        run_variant(args.spread_type, datasets_root, preds_root,
+        run_variant(args.spread_type, datasets_root, preds_root, models_root,
                     args.min_samples, not args.no_tune, args.window)
