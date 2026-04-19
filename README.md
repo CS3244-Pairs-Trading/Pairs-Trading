@@ -341,10 +341,12 @@ Hyperparameter grids per model:
 
 | Metric | Formula | Used for |
 |--------|---------|----------|
-| **MSE** | mean((predicted - actual)^2) | Primary metric for all regression models |
-| **MAE** | mean(\|predicted - actual\|) | Secondary — less sensitive to outliers |
 | **RMSE** | sqrt(MSE) | Same unit as the spread change (Only used in the holdout set)|
-| **Directional accuracy** | % of times sign(predicted) == sign(actual) | Sanity check — should be above 50% |
+| **Directional accuracy** | % of times sign(predicted) == sign(actual) | Should be above 50% to beat random guessing |
+| R² | 1 - sum of squares residual/sum of squares total | How much variance in actual spread change the model explains |
+| Information Coefficient (IC) | Spearman rank correlation of predicted vs actual | Standard signal quality metric |
+| Profit-weighted directional accuracy | Directional accuracy weighted by |actual change| | Correct calls on big moves count more than small ones |
+| Directional-weighted MSE | MSE weighted by actual magnitude | Penalizes getting direction wrong on large moves more heavily |
 
 These are computed on validation data per fold, then averaged across all 4 folds.
 
@@ -359,21 +361,6 @@ These are computed on validation data per fold, then averaged across all 4 folds
 | **Number of trades** | Must be above 30 for statistical significance. |
 | **Turnover** | How much capital is traded annually. High turnover = high transaction costs. |
 | **Fitness** | Sharpe × sqrt(\|return\| / max(turnover, 12.5%)). Penalizes high-turnover strategies. |
-
-### What the report comparison table should look like
-
-```
-| Model    | Avg Val MSE | Avg Val MAE | Avg Val Sharpe | Avg Val MaxDD |
-|----------|-------------|-------------|----------------|---------------|
-| OU       | ...         | ...         | ...            | ...           |
-| ARMA     | ...         | ...         | ...            | ...           |
-| Lin Reg  | ...         | ...         | ...            | ...           |
-| XGBoost  | ...         | ...         | ...            | ...           |
-| LSTM     | ...         | ...         | ...            | ...           |
-| LSTM Enc-Dec | ...      | ...         | ...            | ...           |
-```
-
-Each row uses the best-tuned version of that model (best hyperparameters selected via 4-fold validation average). All evaluated on the same validation pairs and dates.
 
 ---
 
@@ -439,8 +426,15 @@ python3 -m src.models.pair_dataset_builder
 │       └── backtest_engine.py             # Pluggable signal-based backtester
 ├── tests/
 │   └── test_kalman.py                     # Kalman filter validation tests
+├── notebooks/
+|   ├── model_comparison.ipynb
+|   ├── sensitivity_analysis.ipynb
+|   └── shap_analysis.ipynb
 ├── prepare_data.py                        # Full data prep pipeline (run first)
 ├── pairs_discovery.py                     # Full pair discovery pipeline
+├── eda_1.ipynb
+├── eda_2.ipynb
+├── eda_3.ipynb
 ├── requirements.txt
 └── data/                                  # gitignored — regenerate with pipeline
 ```
