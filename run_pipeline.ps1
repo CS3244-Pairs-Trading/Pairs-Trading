@@ -159,7 +159,7 @@ if ($SkipModelTraining) {
                 & $py -m src.models.arma_tuning --spread_col spread_kalman --horizon $horizon
                 & $py -m src.models.linear_regression
                 & $py -m src.models.xgboost_model --spread_type kalman
-                & $py -m src.models.lstm
+                & $py -m src.models.lstm --spread kalman
                 & $py -m src.models.lstm_encoder_decoder --spread kalman
             }
         }
@@ -178,7 +178,7 @@ if ($SkipBestParamRuns) {
             "ou"      { & $py -m src.models.ou }
             "arma"    {
                 # & $py -m src.models.arma --spread_col spread_ols --p 9 --q 8 --horizon $horizon --eval_split val
-                & $py -m src.models.arma --spread_col spread_kalman --p 6 --q 2 --horizon $horizon --eval_split val
+                & $py -m src.models.arma --spread_col spread_kalman --p 7 --q 2 --horizon $horizon --eval_split val
             }
             "linear"  { & $py -m src.models.linear_regression }
             "xgboost" {
@@ -198,9 +198,9 @@ if ($SkipBestParamRuns) {
                 & $py -m src.models.arma --spread_col spread_kalman --p 7 --q 2 --horizon $horizon --eval_split val
                 & $py -m src.models.linear_regression
                 # & $py -m src.models.xgboost_model --spread_type ols --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
-                & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 3 --n_estimators 200 --learning_rate 0.01
+                & $py -m src.models.xgboost_model --spread_type kalman --no_tune --max_depth 3 --n_estimators 100 --learning_rate 0.01
                 # & $py -m src.models.lstm --spread ols --hidden 32 --window_size 20 --lr 0.001 --no_tune
-                & $py -m src.models.lstm --spread kalman --hidden 32 --window_size 20 --lr 0.001 --no_tune
+                & $py -m src.models.lstm --spread kalman --hidden 64 --window_size 10 --lr 0.001 --no_tune
                 # & $py -m src.models.lstm_encoder_decoder --spread ols --hidden 32 --window_size 20 --lr 0.0005 --no_tune
                 & $py -m src.models.lstm_encoder_decoder --spread kalman --hidden 64 --window_size 20 --lr 0.0005 --no_tune
             }

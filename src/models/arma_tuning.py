@@ -303,6 +303,7 @@ def aggregate_global_ranking(validation_results: pd.DataFrame) -> pd.DataFrame:
                 "spread_col",
                 "p",
                 "q",
+                "mean_val_directional_weighted_mse",
                 "mean_val_mse",
                 "mean_val_mae",
                 "n_successful_runs",
