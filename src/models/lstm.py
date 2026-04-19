@@ -38,6 +38,18 @@ Output
 
     Columns: Date, pair, predicted_change, predicted_value, predicted_z
 
+Model saving (NEW)
+------------------
+    After each window's train_model() call the best weights are persisted via
+    torch.save() so SHAP / GradientExplainer analysis can reload the model
+    without any retraining.
+
+    Saved to:
+        data/processed/models/lstm_<spread_type>/<window>.pt
+
+    Companion metadata (feature mu/std needed for inference):
+        data/processed/models/lstm_<spread_type>/<window>_norm.npz
+
 Usage
 -----
     # Full run (tune + predict on all folds for both OLS and Kalman)
@@ -136,6 +148,76 @@ class SpreadLSTM(nn.Module):
         # take last timestep
         last_hidden = lstm_out[:, -1, :]  # (batch, hidden_size)
         return self.fc(last_hidden).squeeze(-1)  # (batch,)
+
+
+# ---------------------------------------------------------------------------
+# NEW: save / load helpers
+# ---------------------------------------------------------------------------
+
+def save_lstm_model(
+    model: SpreadLSTM,
+    feat_mu: np.ndarray,
+    feat_std: np.ndarray,
+    path: str | Path,
+) -> None:
+    """
+    Persist a trained SpreadLSTM and its normalisation statistics.
+
+    Two files are written next to each other:
+        <path>.pt   — torch state dict (weights only, architecture-agnostic)
+        <path>_norm.npz — feat_mu and feat_std arrays needed for inference
+
+    Args:
+        model    : trained SpreadLSTM (CPU or GPU)
+        feat_mu  : per-feature training mean  (shape: n_features,)
+        feat_std : per-feature training std   (shape: n_features,)
+        path     : destination path WITHOUT extension,
+                   e.g. "data/processed/models/lstm_ols/2011_2013"
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Always save weights on CPU so the file is device-independent
+    cpu_state = {k: v.cpu() for k, v in model.state_dict().items()}
+    torch.save(cpu_state, str(path) + ".pt")
+    np.savez(str(path) + "_norm.npz", feat_mu=feat_mu, feat_std=feat_std)
+    print(f"  ✓ LSTM saved → {path}.pt + {path}_norm.npz")
+
+
+def load_lstm_model(
+    path: str | Path,
+    hidden_size: int,
+    input_size: int = 11,
+    num_layers: int = NUM_LAYERS,
+    dropout: float = DROPOUT,
+) -> tuple[SpreadLSTM, np.ndarray, np.ndarray]:
+    """
+    Restore a saved SpreadLSTM and its normalisation statistics.
+
+    Args:
+        path        : same path stem passed to save_lstm_model()
+        hidden_size : must match the value used when training
+        input_size  : number of input features (default 11)
+        num_layers  : must match the value used when training
+        dropout     : must match the value used when training
+
+    Returns:
+        (model, feat_mu, feat_std)
+        where model is in eval() mode on CPU.
+    """
+    path = Path(path)
+    model = SpreadLSTM(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    model.load_state_dict(torch.load(str(path) + ".pt", map_location="cpu"))
+    model.eval()
+
+    norm = np.load(str(path) + "_norm.npz")
+    print(f"  ✓ LSTM loaded ← {path}.pt + {path}_norm.npz")
+    return model, norm["feat_mu"], norm["feat_std"]
 
 
 # ---------------------------------------------------------------------------
@@ -510,10 +592,15 @@ def run_predictions_for_window(
     output_root: Path,
     is_holdout: bool = False,
     verbose: bool = True,
+    models_root: Path | None = None,   # NEW
 ) -> dict[str, float] | None:
     """
     Train on one window's train set, predict on val/test set,
     save unified predictions CSV, return metrics.
+
+    NEW: saves the trained model weights and normalisation stats to
+         models_root / lstm_<spread_type> / <window_label>.pt
+         models_root / lstm_<spread_type> / <window_label>_norm.npz
     """
     train_path = pair_dataset_root / window_label / "train_pair_dataset.csv"
     eval_name = "test" if is_holdout else "val"
@@ -555,6 +642,13 @@ def run_predictions_for_window(
         verbose=verbose,
     )
 
+    # ── NEW: save model weights + normalisation statistics ─────────────────
+    spread_type = "kalman" if "kalman" in target_col else "ols"
+    if models_root is None:
+        models_root = DEFAULT_CONFIG.processed_dir / "models"
+    model_stem = models_root / f"lstm_{spread_type}" / window_label
+    save_lstm_model(model, feat_mu, feat_std, model_stem)
+
     # Predict
     preds = predict(model, X_val_n)
 
@@ -567,7 +661,6 @@ def run_predictions_for_window(
               f"DirAcc={metrics['dir_acc']:.3f}")
 
     # Build current spread values for deriving predicted_value and predicted_z
-    # We need the current spread value at each prediction point
     eval_df_sorted = eval_df.sort_values(["pair", "Date"]).reset_index(drop=True)
     current_spreads = []
     current_vols = []
@@ -587,25 +680,20 @@ def run_predictions_for_window(
             else:
                 current_vols.append(1e-8)
 
-    # Align: some sequences may have been skipped due to NaN
-    # We need to match predictions to the dates/pairs we actually predicted for
     pred_df = pd.DataFrame({
         "Date": val_dates,
         "pair": val_pairs,
         "predicted_change": preds,
     })
 
-    # Add derived columns using aligned current values
     if len(current_spreads) == len(pred_df):
         pred_df["predicted_value"] = preds + np.array(current_spreads, dtype=np.float32)
         pred_df["predicted_z"] = preds / np.array(current_vols, dtype=np.float32)
     else:
-        # Fallback if alignment is off
         pred_df["predicted_value"] = np.nan
         pred_df["predicted_z"] = np.nan
 
     # Save
-    spread_type = "kalman" if "kalman" in target_col else "ols"
     out_dir = output_root / f"lstm_{spread_type}" / window_label
     out_dir.mkdir(parents=True, exist_ok=True)
     pred_df.to_csv(out_dir / "predictions.csv", index=False)
@@ -634,6 +722,7 @@ def run_lstm_pipeline(
     target_window: str | None = None,
     run_holdout: bool = False,
     verbose: bool = True,
+    models_root: Path | None = None,   # NEW
 ) -> None:
     """
     Full LSTM pipeline: tune hyperparameters, then predict on all folds.
@@ -645,6 +734,7 @@ def run_lstm_pipeline(
               if False, use provided hidden_size/window_size/lr.
     target_window : if set, only run this window.
     run_holdout : if True, also run the holdout test set.
+    models_root : where to save model .pt files (NEW)
     """
     config = DEFAULT_CONFIG
     pair_root = pair_dataset_root or (config.processed_dir / "pair_datasets")
@@ -709,6 +799,7 @@ def run_lstm_pipeline(
                 output_root=out_root,
                 is_holdout=False,
                 verbose=verbose,
+                models_root=models_root,   # NEW
             )
             if metrics:
                 all_metrics.append(metrics)
@@ -729,6 +820,7 @@ def run_lstm_pipeline(
                     output_root=out_root,
                     is_holdout=True,
                     verbose=verbose,
+                    models_root=models_root,   # NEW
                 )
                 if metrics:
                     metrics["is_holdout"] = True
@@ -781,6 +873,10 @@ def main() -> None:
     parser.add_argument("--no_tune", action="store_true", help="Skip hyperparameter tuning.")
     parser.add_argument("--holdout", action="store_true", help="Also run holdout test set.")
     parser.add_argument("--quiet", action="store_true", help="Minimal output.")
+    parser.add_argument(
+        "--models_root", type=str, default=None,
+        help="Where to save trained .pt model files (default: processed/models/).",
+    )
     args = parser.parse_args()
 
     # If any hyperparameter is manually set, skip tuning
@@ -796,6 +892,7 @@ def main() -> None:
         target_window=args.window,
         run_holdout=args.holdout,
         verbose=not args.quiet,
+        models_root=Path(args.models_root) if args.models_root else None,
     )
 
 

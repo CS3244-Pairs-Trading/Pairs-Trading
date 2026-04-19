@@ -26,12 +26,18 @@ Evaluation metrics:
     MSE                  — primary
     MAE                  — secondary
     Directional accuracy — sanity check (should be > 50%)
+
+Model saving (NEW):
+    After train(), the fitted XGBRegressor is saved to disk as a .ubj (binary JSON)
+    file so that SHAP analysis can be run later without retraining.
+    Call XGBoostPipeline.save_model(path) / XGBoostPipeline.load_model(path).
 """
 
 from __future__ import annotations
 
 import itertools
 import warnings
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -146,6 +152,33 @@ class SpreadChangeXGBoost:
             raise ValueError("Model must be trained before prediction.")
         return self.model.predict(X)
 
+    # ── NEW: per-instance save / load ─────────────────────────────────────
+
+    def save(self, path: str | Path) -> None:
+        """
+        Save the underlying XGBRegressor to disk in XGBoost binary format (.ubj).
+        The file can be loaded back with SpreadChangeXGBoost.load(path).
+        """
+        if not self.is_trained:
+            raise ValueError("Cannot save an untrained model.")
+        self.model.save_model(str(path))
+
+    @classmethod
+    def load(cls, path: str | Path, **init_kwargs) -> "SpreadChangeXGBoost":
+        """
+        Load a previously saved SpreadChangeXGBoost from disk.
+
+        Example
+        -------
+        model = SpreadChangeXGBoost.load("xgboost_ols_holdout.ubj")
+        shap_values = shap.TreeExplainer(model.model).shap_values(X)
+        """
+        instance = cls(**init_kwargs)
+        instance.model = xgb.XGBRegressor()
+        instance.model.load_model(str(path))
+        instance.is_trained = True
+        return instance
+
     @staticmethod
     def derive_outputs(
         predicted_change: np.ndarray,
@@ -212,6 +245,7 @@ class XGBoostPipeline:
     - Train final model with best params
     - Evaluate: MSE / MAE / directional accuracy
     - SHAP feature importance
+    - Save / load the trained model to / from disk (NEW)
     """
 
     def __init__(self, spread_type: str = "ols"):
@@ -350,6 +384,43 @@ class XGBoostPipeline:
         self.best_model = SpreadChangeXGBoost(**defaults)
         self.best_model.fit(X_train, y_train, X_val, y_val, verbose=True)
         return self.best_model
+
+    # ── NEW: save / load the trained model ────────────────────────────────
+
+    def save_model(self, path: str | Path) -> None:
+        """
+        Persist self.best_model to disk.
+
+        Saves as XGBoost binary (.ubj).  The companion load_model() call
+        restores the pipeline to a SHAP-ready state without any retraining.
+
+        Args:
+            path: destination file, e.g.
+                  "data/processed/models/xgboost_ols_holdout.ubj"
+        """
+        if self.best_model is None:
+            raise ValueError("No trained model to save. Call train() first.")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.best_model.save(path)
+        print(f"  ✓ Model saved → {path}")
+
+    def load_model(self, path: str | Path) -> "XGBoostPipeline":
+        """
+        Restore a previously saved model from disk.
+
+        After calling this, the pipeline is SHAP-ready and predict-ready
+        with zero retraining.
+
+        Args:
+            path: path to the .ubj file written by save_model()
+
+        Returns:
+            self  (for chaining)
+        """
+        self.best_model = SpreadChangeXGBoost.load(path)
+        print(f"  ✓ Model loaded ← {path}")
+        return self
 
     # ── evaluate ──────────────────────────────────────────────────────────
 
