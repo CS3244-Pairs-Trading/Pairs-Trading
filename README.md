@@ -343,10 +343,10 @@ Hyperparameter grids per model:
 |--------|---------|----------|
 | **RMSE** | sqrt(MSE) | Same unit as the spread change (Only used in the holdout set)|
 | **Directional accuracy** | % of times sign(predicted) == sign(actual) | Should be above 50% to beat random guessing |
-| R² | 1 - sum of squares residual/sum of squares total | How much variance in actual spread change the model explains |
-| Information Coefficient (IC) | Spearman rank correlation of predicted vs actual | Standard signal quality metric |
-| Profit-weighted directional accuracy | Directional accuracy weighted by |actual change| | Correct calls on big moves count more than small ones |
-| Directional-weighted MSE | MSE weighted by actual magnitude | Penalizes getting direction wrong on large moves more heavily |
+| **R²** | 1 - sum of squares residual/sum of squares total | How much variance in actual spread change the model explains |
+| **Information Coefficient (IC)** | Spearman rank correlation of predicted vs actual | Standard signal quality metric |
+| **Profit-weighted directional accuracy** | Directional accuracy weighted by |actual change| | Correct calls on big moves count more than small ones |
+| **Directional-weighted MSE** | MSE weighted by actual magnitude | Penalizes getting direction wrong on large moves more heavily |
 
 These are computed on validation data per fold, then averaged across all 4 folds.
 
@@ -421,9 +421,13 @@ python3 -m src.models.pair_dataset_builder
 │   │   ├── ou.py                          # OU baseline model
 │   │   ├── ou_extended.py                 # OU + GARCH + regime-switching + VECM
 │   │   ├── xgboost_model.py               # XGBoost model
-│   │   └── xgboost_spread_model.py        # XGBoost model for spread forecasting
+│   │   ├── xgboost_spread_model.py        # XGBoost model for spread forecasting
+|   |   └── run_shap_analysis.py
 │   └── backtest/
-│       └── backtest_engine.py             # Pluggable signal-based backtester
+│       ├── backtest_engine.py             # Pluggable signal-based backtester
+|       ├── forecast_signal.py
+|       ├── quantile_sweep.py
+|       └── quantile_zscore_signal.py
 ├── tests/
 │   └── test_kalman.py                     # Kalman filter validation tests
 ├── notebooks/
