@@ -185,7 +185,6 @@ def extract_pair_spread(df: pd.DataFrame, pair: str, spread_col: str) -> pd.Seri
             "kalman_beta",
         ],
     ].copy()
-    out = df.loc[df["pair"].astype(str) == str(pair), ["Date", spread_col]].copy()
     out = out.dropna(subset=[spread_col]).sort_values("Date")
     if out.empty:
         return pd.Series(dtype=float, name="spread")
@@ -203,7 +202,10 @@ def extract_pair_frame(df: pd.DataFrame, pair: str, spread_col: str, vol_col: st
     if missing:
         raise ValueError(f"Missing required columns for pair extraction: {sorted(missing)}")
 
-    out = df.loc[df["pair"].astype(str) == str(pair), ["Date", spread_col, vol_col]].copy()
+    extra_cols = [c for c in ["kalman_beta", "log_price_a", "log_price_b"] if c in df.columns]
+    select_cols = ["Date", spread_col, vol_col] + extra_cols
+
+    out = df.loc[df["pair"].astype(str) == str(pair), select_cols].copy()
     if out.empty:
         return out
 
@@ -245,7 +247,8 @@ def forecast_horizon_walk_forward(
         raise ValueError("horizon must be > 0")
 
     train_work = train_pair_df[["Date", spread_col]].copy()
-    eval_work = eval_pair_df[["Date", spread_col, vol_col]].copy()
+    extra_cols = [c for c in ["kalman_beta", "log_price_a", "log_price_b"] if c in eval_pair_df.columns]
+    eval_work = eval_pair_df[["Date", spread_col, vol_col] + extra_cols].copy()
 
     if train_work.empty or eval_work.empty:
         return pd.DataFrame()
@@ -425,6 +428,8 @@ def run_arma_for_pair(
         "directional_weighted_mse": float(metrics_eval["directional_weighted_mse"]),
         "directional_accuracy": float(metrics_eval["directional_accuracy"]),
         "information_coefficient": float(metrics_eval["information_coefficient"]),
+        "mse_level": float(np.mean((forecast_df["actual_value"] - forecast_df["predicted_value"]) ** 2)),
+        "mae_level": float(np.mean(np.abs(forecast_df["actual_value"] - forecast_df["predicted_value"]))),
     }
     metrics: dict[str, float | int | str] = {
         "pair": pair,
