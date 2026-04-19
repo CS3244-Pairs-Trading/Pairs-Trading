@@ -345,7 +345,7 @@ Hyperparameter grids per model:
 | **Directional accuracy** | % of times sign(predicted) == sign(actual) | Should be above 50% to beat random guessing |
 | **R²** | 1 - sum of squares residual/sum of squares total | How much variance in actual spread change the model explains |
 | **Information Coefficient (IC)** | Spearman rank correlation of predicted vs actual | Standard signal quality metric |
-| **Profit-weighted directional accuracy** | Directional accuracy weighted by |actual change| | Correct calls on big moves count more than small ones |
+| **Profit-weighted directional accuracy** | Directional accuracy weighted by \|actual change\| | Correct calls on big moves count more than small ones |
 | **Directional-weighted MSE** | MSE weighted by actual magnitude | Penalizes getting direction wrong on large moves more heavily |
 
 These are computed on validation data per fold, then averaged across all 4 folds.
