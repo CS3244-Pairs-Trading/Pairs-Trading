@@ -15,6 +15,15 @@ Primary evaluation target remains comparable to existing baselines:
 Outputs:
     data/processed/predictions/lstm_encoder_decoder_<spread_type>/<window>/predictions.csv
     with columns: Date, pair, predicted_change, predicted_value, predicted_z
+
+Model saving (NEW):
+    After each window's training the best weights are persisted via torch.save()
+    so SHAP / GradientExplainer analysis can reload the model without retraining.
+
+    Saved to:
+        data/processed/models/lstm_encoder_decoder_<spread_type>/<window>.pt
+        data/processed/models/lstm_encoder_decoder_<spread_type>/<window>_norm.npz
+        data/processed/models/lstm_encoder_decoder_<spread_type>/<window>_tgt_norm.npz
 """
 
 from __future__ import annotations
@@ -140,6 +149,88 @@ class Seq2SeqSpreadModel(nn.Module):
 
         return torch.stack(outputs, dim=1)
 
+
+# ---------------------------------------------------------------------------
+# NEW: save / load helpers
+# ---------------------------------------------------------------------------
+
+def save_seq2seq_model(
+    model: Seq2SeqSpreadModel,
+    feat_mu: np.ndarray,
+    feat_std: np.ndarray,
+    tgt_mu: np.ndarray,
+    tgt_std: np.ndarray,
+    path: str | Path,
+) -> None:
+    """
+    Persist a trained Seq2SeqSpreadModel and its normalisation stats.
+
+    Three files are written:
+        <path>.pt          — torch state dict (device-independent)
+        <path>_norm.npz    — feat_mu, feat_std for input normalisation
+        <path>_tgt_norm.npz — tgt_mu, tgt_std for target de-normalisation
+
+    Args:
+        model    : trained Seq2SeqSpreadModel
+        feat_mu  : per-feature training mean  (n_features,)
+        feat_std : per-feature training std   (n_features,)
+        tgt_mu   : per-horizon training mean  (horizon,)
+        tgt_std  : per-horizon training std   (horizon,)
+        path     : destination path stem WITHOUT extension
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    cpu_state = {k: v.cpu() for k, v in model.state_dict().items()}
+    torch.save(cpu_state, str(path) + ".pt")
+    np.savez(str(path) + "_norm.npz", feat_mu=feat_mu, feat_std=feat_std)
+    np.savez(str(path) + "_tgt_norm.npz", tgt_mu=tgt_mu, tgt_std=tgt_std)
+    print(f"  ✓ Seq2Seq saved → {path}.pt + norm files")
+
+
+def load_seq2seq_model(
+    path: str | Path,
+    hidden_size: int,
+    horizon: int,
+    input_size: int = 11,
+    num_layers: int = NUM_LAYERS,
+    dropout: float = DROPOUT,
+) -> tuple[Seq2SeqSpreadModel, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Restore a saved Seq2SeqSpreadModel and its normalisation stats.
+
+    Args:
+        path        : same path stem passed to save_seq2seq_model()
+        hidden_size : must match the value used when training
+        horizon     : must match DEFAULT_HORIZON (or the value used)
+        input_size  : number of input features (default 11)
+        num_layers  : must match the value used when training
+        dropout     : must match the value used when training
+
+    Returns:
+        (model, feat_mu, feat_std, tgt_mu, tgt_std)
+        where model is in eval() mode on CPU.
+    """
+    path = Path(path)
+    model = Seq2SeqSpreadModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        horizon=horizon,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    model.load_state_dict(torch.load(str(path) + ".pt", map_location="cpu"))
+    model.eval()
+
+    norm = np.load(str(path) + "_norm.npz")
+    tgt_norm = np.load(str(path) + "_tgt_norm.npz")
+    print(f"  ✓ Seq2Seq loaded ← {path}.pt + norm files")
+    return model, norm["feat_mu"], norm["feat_std"], tgt_norm["tgt_mu"], tgt_norm["tgt_std"]
+
+
+# ---------------------------------------------------------------------------
+# DATA
+# ---------------------------------------------------------------------------
 
 def load_pair_dataset(path: Path) -> pd.DataFrame | None:
     """Load one pair dataset CSV sorted by pair/date; return None when missing."""
@@ -608,10 +699,14 @@ def run_predictions_for_window(
     patience: int = PATIENCE,
     is_holdout: bool = False,
     verbose: bool = True,
+    models_root: Path | None = None,   # NEW
 ) -> dict[str, Any] | None:
     """
     Train on window train split and evaluate on val/test split.
     Saves normalized cross-model predictions.csv under lstm_encoder_decoder_<spread_type>/<window>.
+
+    NEW: saves the trained model weights and normalisation stats to
+         models_root / lstm_encoder_decoder_<spread_type> / <window_label>.pt  (+ norm files)
     """
 
     if spread_type not in TARGET_MAP:
@@ -654,7 +749,7 @@ def run_predictions_for_window(
             )
         return None
 
-    X_train, X_eval, _, _ = normalize_features(train_samples["X"], eval_samples["X"])
+    X_train, X_eval, feat_mu, feat_std = normalize_features(train_samples["X"], eval_samples["X"])
     y_train_n, y_eval_n, tgt_mu, tgt_std = normalize_targets(
         train_samples["y_seq"], eval_samples["y_seq"]
     )
@@ -681,6 +776,12 @@ def run_predictions_for_window(
         patience=patience,
         verbose=verbose,
     )
+
+    # ── NEW: persist the trained model ─────────────────────────────────────
+    if models_root is None:
+        models_root = DEFAULT_CONFIG.processed_dir / "models"
+    model_stem = models_root / f"lstm_encoder_decoder_{spread_type}" / window_label
+    save_seq2seq_model(model, feat_mu, feat_std, tgt_mu, tgt_std, model_stem)
 
     pred_seq_n = predict(model, X_eval, batch_size=batch_size)
     pred_seq = pred_seq_n * tgt_std + tgt_mu
@@ -751,6 +852,7 @@ def run_lstm_encoder_decoder_pipeline(
     max_epochs: int = MAX_EPOCHS,
     patience: int = PATIENCE,
     verbose: bool = True,
+    models_root: Path | None = None,   # NEW
 ) -> None:
     """Run tuning + per-window prediction pipeline for one or both spread variants."""
     pair_root = pair_dataset_root or (DEFAULT_CONFIG.processed_dir / "pair_datasets")
@@ -829,6 +931,7 @@ def run_lstm_encoder_decoder_pipeline(
                 patience=patience,
                 is_holdout=False,
                 verbose=verbose,
+                models_root=models_root,   # NEW
             )
             if metrics_row is not None:
                 all_metrics.append(metrics_row)
@@ -854,6 +957,7 @@ def run_lstm_encoder_decoder_pipeline(
                     patience=patience,
                     is_holdout=True,
                     verbose=verbose,
+                    models_root=models_root,   # NEW
                 )
                 if metrics_row is not None:
                     all_metrics.append(metrics_row)
@@ -905,6 +1009,10 @@ def main() -> None:
         default=DEFAULT_TEACHER_FORCING,
         help="Teacher forcing ratio in [0, 1].",
     )
+    parser.add_argument(
+        "--models_root", type=str, default=None,
+        help="Where to save trained .pt model files (default: processed/models/).",
+    )
     args = parser.parse_args()
 
     if args.horizon <= 0:
@@ -931,6 +1039,7 @@ def main() -> None:
         max_epochs=MAX_EPOCHS,
         patience=PATIENCE,
         verbose=not args.quiet,
+        models_root=Path(args.models_root) if args.models_root else None,
     )
 
 

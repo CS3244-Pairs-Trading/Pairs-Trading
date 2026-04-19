@@ -49,6 +49,14 @@ Output (saved separately for OLS and Kalman):
         all_val_results.csv --> aggregated val metrics across all windows and pairs
         all_test_results.csv --> aggregated test metrics across all windows and pairs
         fold_summary.csv --> average MSE/MAE per fold (for tuning comparison table)
+
+Model saving (NEW):
+    After fitting each (pair, window) model the (LinearRegression, StandardScaler) bundle
+    is persisted with joblib so that SHAP / permutation-importance analysis can reload
+    coefficients without any retraining.
+
+    Saved to:
+        data/processed/models/linear_regression_<spread_type>/<window>/<pair>.joblib
 """
 
 from __future__ import annotations
@@ -56,6 +64,7 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import joblib                              # NEW
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from src.config import DEFAULT_CONFIG
@@ -128,6 +137,51 @@ def compute_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
     }
 
 
+# NEW: save / load helpers
+
+def save_lr_model(
+    model: LinearRegression,
+    scaler: StandardScaler,
+    feature_names: list[str],
+    path: str | Path,
+) -> None:
+    """
+    Persist a fitted (LinearRegression, StandardScaler, feature_names) bundle.
+
+    Saved as a single .joblib file.  Load with load_lr_model().
+
+    Args:
+        model         : fitted LinearRegression
+        scaler        : fitted StandardScaler (trained on the same X_train)
+        feature_names : list of feature column names used (in order)
+        path          : destination file, e.g.
+                        "data/processed/models/linear_regression_ols/2011_2013/abx_au.joblib"
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bundle = {"model": model, "scaler": scaler, "feature_names": feature_names}
+    joblib.dump(bundle, str(path))
+
+
+def load_lr_model(
+    path: str | Path,
+) -> tuple[LinearRegression, StandardScaler, list[str]]:
+    """
+    Restore a saved (LinearRegression, StandardScaler, feature_names) bundle.
+
+    Returns:
+        (model, scaler, feature_names)
+
+    Example usage for SHAP permutation importance:
+        model, scaler, features = load_lr_model(".../<window>/<pair>.joblib")
+        X_scaled = scaler.transform(X_eval[features].values)
+        preds = model.predict(X_scaled)
+        # LinearRegression coefficients live at model.coef_
+    """
+    bundle = joblib.load(str(path))
+    return bundle["model"], bundle["scaler"], bundle["feature_names"]
+
+
 # THE MODEL
 
 def run_lr_for_pair(
@@ -138,12 +192,16 @@ def run_lr_for_pair(
     window_label: str,
     target_col: str,
     spread_col: str,
+    models_root: Path | None = None,   # NEW
 ) -> tuple[pd.DataFrame, dict] | None:
     """
     Fit a linear regression model on the 11 engineered features and predict
     the spread change over the next 10 days on the eval split.
     Supports both OLS (label_continuous_10d) and Kalman (label_kalman_10d) targets.
     Returns (forecast_df, metrics) or None if the pair is skipped.
+
+    NEW: if models_root is provided, saves the fitted model + scaler to
+         models_root / linear_regression_<spread_type> / <window_label> / <pair>.joblib
     """
 
     # extract this pair's rows from train and eval
@@ -188,6 +246,14 @@ def run_lr_for_pair(
     model = LinearRegression()
     model.fit(X_train_s, y_train)
     y_pred = model.predict(X_eval_s)
+
+    # ── NEW: save the fitted model + scaler ───────────────────────────────
+    if models_root is not None:
+        # Infer spread_type from target_col name
+        spread_tag = "kalman" if "kalman" in target_col else "ols"
+        model_dir = models_root / f"linear_regression_{spread_tag}" / window_label
+        safe_name = _safe_pair_name(pair)
+        save_lr_model(model, scaler, available_features, model_dir / f"{safe_name}.joblib")
 
     metrics = compute_metrics(y_eval, y_pred)
     metrics.update({
@@ -290,6 +356,7 @@ def run_window(
     spread_col: str,
     target_pair: str | None = None,
     eval_split_arg: str = "auto",
+    models_root: Path | None = None,   # NEW
 ) -> tuple[list[dict], list[dict]]:
     """Run linear regression for all pairs in one window."""
 
@@ -342,6 +409,7 @@ def run_window(
                     window_label = window_label,
                     target_col = target_col,
                     spread_col = spread_col,
+                    models_root = models_root,   # NEW
                 )
             except Exception as exc:
                 print(f"[{window_label}:{eval_name}:{pair}] Failed: {exc}")
@@ -388,6 +456,8 @@ EVAL_SPLIT = "auto" # "auto", "val", "test", or "both"
 def main() -> None:
     input_root = DEFAULT_CONFIG.processed_dir / "pair_datasets"
     lr_root    = DEFAULT_CONFIG.processed_dir / "linear_regression_outputs"
+    # NEW: default model save location
+    models_root = DEFAULT_CONFIG.processed_dir / "models"
 
     if not input_root.exists():
         raise FileNotFoundError(f"Input root not found: {input_root}")
@@ -422,6 +492,7 @@ def main() -> None:
                 spread_col = spread_col,
                 target_pair = TARGET_PAIR,
                 eval_split_arg = EVAL_SPLIT,
+                models_root = models_root,   # NEW
             )
             all_val_results.extend(val_rows)
             all_test_results.extend(test_rows)
